@@ -254,12 +254,18 @@ def generate_with_provider(prompt: str, system: str | None = None, temperature: 
     a 429 / timeout / network error moves straight to the next provider. Returns (text, provider label).
     Other errors (bad request, bad key) are raised, never hidden."""
     errors_seen = []
+    groq_wait = None  # seconds until Groq's per-minute token budget resets (from its 429 reply)
     if config.GROQ_API_KEY:
         try:
             return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 raise ProviderError(f"Groq rejected GROQ_API_KEY ({e.response.status_code}): check the key in .env")
+            if e.response.status_code == 429:
+                try:
+                    groq_wait = float(e.response.headers.get("retry-after", "") or "nan")
+                except ValueError:
+                    groq_wait = None
             errors_seen.append(f"groq: HTTP {e.response.status_code}")
         except httpx.HTTPError as e:
             errors_seen.append(f"groq: {type(e).__name__}")
@@ -283,4 +289,12 @@ def generate_with_provider(prompt: str, system: str | None = None, temperature: 
                 f"ollama:{config.OLLAMA_MODEL}")
     except httpx.HTTPError as e:
         errors_seen.append(f"ollama: {type(e).__name__}")
+    # last resort only (every provider failed): if Groq's token budget resets within 10 s, wait once
+    if groq_wait is not None and groq_wait == groq_wait and groq_wait <= 10:
+        print(f"[llm] all providers failed; waiting {groq_wait:.0f} s for Groq's per-minute limit to reset")
+        time.sleep(groq_wait + 0.5)
+        try:
+            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
+        except httpx.HTTPError as e:
+            errors_seen.append(f"groq (after wait): {type(e).__name__}")
     raise ProviderError("No LLM provider could answer: " + " | ".join(errors_seen))

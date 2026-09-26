@@ -20,7 +20,7 @@ GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 # Second answer provider (free): https://console.groq.com
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
 # Embeddings: "ollama" (local bge-m3, free, no daily limit) or "gemini" (1000/day on the free tier)
 EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "gemini").lower()
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")

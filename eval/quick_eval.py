@@ -35,7 +35,7 @@ from app.answer import ask  # noqa: E402  (imported after arg parsing: loads ind
 
 t_start = time.time()
 rows = []
-print(f"{'id':5} {'type':20} {'hit@5':5} {'cite_ok':>7} {'refused':7} {'facts':>5} {'secs':>5}  provider", flush=True)
+print(f"{'id':5} {'type':20} {'hit@5':5} {'cite_ok':>7} {'refused':7} {'facts':>5} {'secs':>5} {'ret':>5} {'rrk':>5} {'gen':>5} {'chk':>5}  provider", flush=True)
 for qid in args.ids:
     if time.time() - t_start > LIMIT_S:
         print(f"STOP: 10-minute limit reached after {len(rows)} questions", flush=True)
@@ -60,7 +60,9 @@ for qid in args.ids:
     rows.append(row)
     f = lambda v: "-" if v is None else (f"{v:.2f}" if isinstance(v, float) else str(v))
     print(f"{qid:5} {q['type']:20} {f(row['hit5']):5} {f(row['cite_valid']):>7} {str(row['refused']):7} "
-          f"{f(row['facts']):>5} {row['secs']:5.1f}  {row['provider']}", flush=True)
+          f"{f(row['facts']):>5} {row['secs']:5.1f} {tr.get('retrieval', {}).get('ms', 0) / 1000:5.1f} "
+          f"{tr.get('retrieval', {}).get('rerank_ms', 0) / 1000:5.1f} {tr.get('generate_ms', 0) / 1000:5.1f} "
+          f"{tr.get('verify_ms', 0) / 1000:5.1f}  {row['provider']}", flush=True)
 
 out = ROOT / "eval" / f"results_{args.label}.jsonl"
 out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")

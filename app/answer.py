@@ -62,6 +62,23 @@ def label(n: int, c: dict) -> str:
     return f"[{n}] " + " | ".join(parts)
 
 
+CONTEXT_CHARS = 12_000   # ~3,000 tokens: keeps each question well under Groq's free 8,000 tokens/minute
+EXCERPT_CHARS = 1_500
+
+
+def fit_budget(chunks: list[dict], question: str) -> list[dict]:
+    """Keep excerpts in rank order until the context budget is used; long excerpts are cut to the
+    part most similar to the question (best_window)."""
+    out, used = [], 0
+    for c in chunks:
+        text = c["text"] if len(c["text"]) <= EXCERPT_CHARS else best_window(question, c["text"], EXCERPT_CHARS)
+        if out and used + len(text) > CONTEXT_CHARS:
+            break
+        out.append({**c, "text": text})
+        used += len(text)
+    return out
+
+
 def format_context(chunks: list[dict]) -> str:
     return "\n\n".join(f"{label(n, c)}\n{c['text']}" for n, c in enumerate(chunks, start=1))
 
@@ -167,9 +184,22 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
         c = chunks[n - 1]
         return f"{c['title']} {c.get('section', '')} {c['text']}"
 
+    stop = {"the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "with", "is", "are", "be", "by", "from",
+            "your", "you", "if", "as", "at", "this", "that", "its", "it", "any", "within", "under"}
+
+    def words_covered(claim: str, n: int) -> float:
+        cw = {w for w in _WORD.findall(claim.lower()) if w not in stop}
+        return len(cw & set(_WORD.findall(full(n).lower()))) / len(cw) if cw else 0.0
+
     def support(claim: str, cited: list[int], n: int, score: float) -> float:
         # every number in the sentence must appear in what it cites (all its cited excerpts together)
-        return score if numbers_ok(claim, " ".join(full(m) for m in cited)) else 0.0
+        if not numbers_ok(claim, " ".join(full(m) for m in cited)):
+            return 0.0
+        # short summary bullets ("Timeline: within 90 days of validity") are too terse for the cross-encoder:
+        # accept them when most of their words are in the cited excerpt
+        if len(claim.split()) <= 14 and words_covered(claim, n) >= 0.75:
+            return max(score, 0.5)
+        return score
 
     pairs = [(c, best_window(c, chunks[n - 1]["text"])) for _, _, c, cited in claims for n in cited]
     it = iter(rerank.pair_scores(pairs))
@@ -186,7 +216,8 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
                   for i in failing}
     alt_pairs = [(claims[i][2], best_window(claims[i][2], chunks[n - 1]["text"])) for i in failing for n in candidates[i]]
     it2 = iter(rerank.pair_scores(alt_pairs))
-    best_alt = {i: max(((next(it2), n) for n in candidates[i]), default=(0.0, None)) for i in failing}
+    best_alt = {i: max(((support(claims[i][2], [n], n, next(it2)), n) for n in candidates[i]), default=(0.0, None))
+                for i in failing}
 
     removed = []
     parts_by_line = {li: list(parts) for li, parts in units}
@@ -275,7 +306,7 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         return hit
 
     ret = retrieve(search_q)
-    chunks = ret["chunks"]
+    chunks = fit_budget(ret["chunks"], search_q)
     trace = {"retrieval": ret["trace"],
              "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"], "section": c.get("section", "")[:80],
                          "scheme": c.get("scheme"), "page": c.get("page"), "rerank": c.get("rerank"),
