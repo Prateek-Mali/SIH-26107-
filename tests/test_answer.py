@@ -87,3 +87,12 @@ def test_provider_fallback(monkeypatch):
     monkeypatch.setattr(llm, "_call", lambda *a, **k: (_ for _ in ()).throw(llm.AllModelsBusy("429")))
     monkeypatch.setattr(llm, "groq_generate", lambda *a, **k: "from groq")
     assert llm.generate_with_provider("q") == ("from groq", f"groq:{config.GROQ_MODEL}")
+
+
+def test_marker_formats_are_normalised():
+    assert A.normalize_markers("Fee is Rs 1000 [1, 2, 6]. Steps [3-5].") == "Fee is Rs 1000 [1][2][6]. Steps [3][4][5]."
+
+
+def test_splitter_and_list_renumbering():
+    assert A.SENTENCE_SPLIT.split("Inspection fee is Rs. 7,000 per man day [1]. Next.") == ["Inspection fee is Rs. 7,000 per man day [1].", "Next."]
+    assert A.renumber_lists("1. a\n2. b\n4. c\n\ntext\n3. d") == "1. a\n2. b\n3. c\n\ntext\n1. d"
