@@ -213,14 +213,22 @@ class ProviderError(RuntimeError):
     pass
 
 
-def groq_generate(prompt: str, system: str | None, temperature: float, max_tokens: int) -> str:
+def groq_generate(prompt: str, system: str | None, temperature: float, max_tokens: int,
+                  model: str | None = None) -> str:
+    model = model or config.GROQ_MODEL
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    if "gpt-oss" in model:
+        body["reasoning_effort"] = "low"  # fewer hidden reasoning tokens: faster, cheaper
     r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
-                   headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
-                   json={"model": config.GROQ_MODEL, "messages": messages, "temperature": temperature,
-                         "max_tokens": max_tokens}, timeout=CALL_TIMEOUT_S)
+                   headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"}, json=body, timeout=CALL_TIMEOUT_S)
     r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+    return clean_text(r.json()["choices"][0]["message"]["content"] or "")
+
+
+def clean_text(text: str) -> str:
+    """Models sometimes use narrow/no-break spaces ('IS\u202f16102'): make them normal spaces."""
+    return text.replace("\u202f", " ").replace("\u00a0", " ").replace("\u2009", " ")
 
 
 CALL_TIMEOUT_S = 30  # per LLM call, every provider
@@ -249,7 +257,8 @@ def _gemini_once(prompt: str, system: str | None, temperature: float, max_tokens
 
 
 def generate_with_provider(prompt: str, system: str | None = None, temperature: float = 0.1,
-                           max_tokens: int = 4096, model: str | None = None) -> tuple[str, str]:
+                           max_tokens: int = 4096, model: str | None = None,
+                           groq_model: str | None = None) -> tuple[str, str]:
     """Groq -> Gemini (free) -> local Ollama. One attempt per provider, 30 s timeout, no retries:
     a 429 / timeout / network error moves straight to the next provider. Returns (text, provider label).
     Other errors (bad request, bad key) are raised, never hidden."""
@@ -257,7 +266,8 @@ def generate_with_provider(prompt: str, system: str | None = None, temperature: 
     groq_wait = None  # seconds until Groq's per-minute token budget resets (from its 429 reply)
     if config.GROQ_API_KEY:
         try:
-            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
+            return (groq_generate(prompt, system, temperature, max_tokens, groq_model),
+                    f"groq:{groq_model or config.GROQ_MODEL}")
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 raise ProviderError(f"Groq rejected GROQ_API_KEY ({e.response.status_code}): check the key in .env")
@@ -275,7 +285,7 @@ def generate_with_provider(prompt: str, system: str | None = None, temperature: 
         try:
             text, m = _gemini_once(prompt, system, temperature, max_tokens, model)
             if text:
-                return text, f"gemini:{m}"
+                return clean_text(text), f"gemini:{m}"
             errors_seen.append("gemini: empty response")
         except Exception as e:
             if not _is_fallback_error(e):
@@ -294,7 +304,8 @@ def generate_with_provider(prompt: str, system: str | None = None, temperature: 
         print(f"[llm] all providers failed; waiting {groq_wait:.0f} s for Groq's per-minute limit to reset")
         time.sleep(groq_wait + 0.5)
         try:
-            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
+            return (groq_generate(prompt, system, temperature, max_tokens, groq_model),
+                    f"groq:{groq_model or config.GROQ_MODEL}")
         except httpx.HTTPError as e:
             errors_seen.append(f"groq (after wait): {type(e).__name__}")
     raise ProviderError("No LLM provider could answer: " + " | ".join(errors_seen))

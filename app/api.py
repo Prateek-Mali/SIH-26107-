@@ -29,7 +29,7 @@ app = FastAPI(title="BIS Assistant API", version="0.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # short in-memory history per session, only so follow-up questions work (never written to disk)
-HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=6))
+HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))  # last 6 turns
 REINDEX = {"running": False, "started": None, "finished": None, "log": ""}
 
 
@@ -44,7 +44,8 @@ class SearchRequest(BaseModel):
 
 def _remember(session_id: str, message: str, result: dict):
     short = re.split(r"\n\n\*\*(?:Sources|स्रोत):\*\*", result["answer"])[0][:1500]
-    HISTORY[session_id].extend([{"role": "user", "content": message}, {"role": "assistant", "content": short}])
+    HISTORY[session_id].extend([{"role": "user", "content": message},
+                                {"role": "assistant", "content": short, "profile": result.get("profile")}])
 
 
 def _chat(req: ChatRequest) -> dict:

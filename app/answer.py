@@ -14,6 +14,7 @@ import time
 from app import config, llm, prompts
 from app.expand import detect_lang, normalize
 from app.retrieval import retrieve
+from app.understand import understand
 
 GREETING = re.compile(r"^\s*(hi+|hello|hey|namaste|namaskar|नमस्ते|नमस्कार|good (morning|afternoon|evening)|"
                       r"thanks?( you)?|thank you|धन्यवाद|ok(ay)?|bye)[\s!.?]*$", re.I)
@@ -132,8 +133,8 @@ def renumber_lists(text: str) -> str:
         if m:
             n += 1
             line = f"{m.group(1)}{n}. {m.group(3)}"
-        elif line.strip():
-            n = 0
+        elif line.strip() and not line.startswith((" ", "\t")) and not re.match(r"\s*([-*•]|[a-z][.)])\s", line):
+            n = 0  # a new paragraph or heading ends the list (indented sub-points do not)
         out.append(line)
     return "\n".join(out)
 
@@ -159,9 +160,22 @@ def _numbers(text: str) -> set[str]:
     return {n for n in nums if n}
 
 
+UNIT = r"(days?|months?|years?|weeks?|working days?|lakh|crore|%|per cent)"
+
+
+def _quantities(text: str) -> set[str]:
+    """'3 months', 'three months', '90 days' -> {'3 month', '90 day'}: a number together with its unit."""
+    t = re.sub(r"\[\d+\]", " ", text.lower())
+    for w, d in NUMBER_WORDS.items():
+        t = re.sub(rf"\b{w}\b", d, t)
+    return {f"{n.replace(',', '')} {u.rstrip('s').replace('working day', 'day')}"
+            for n, u in re.findall(r"(\d[\d,]*)\s*(?:\(\s*\d+\s*\)\s*)?" + UNIT, t)}
+
+
 def numbers_ok(claim: str, passage: str) -> bool:
-    """Every number the claim states must appear in the passage (catches 'ten years' vs 'two years')."""
-    return _numbers(claim) <= _numbers(passage)
+    """Every number the claim states must appear in the passage (catches 'ten years' vs 'two years'), and
+    every quantity with a unit ('3 months') must appear with the same unit."""
+    return _numbers(claim) <= _numbers(passage) and _quantities(claim) <= _quantities(passage)
 
 
 def best_window(claim: str, passage: str, size: int = 700) -> str:
@@ -178,6 +192,46 @@ def best_window(claim: str, passage: str, size: int = 700) -> str:
     return best
 
 
+ADVICE_START = re.compile(
+    r"^(visit|download|create|register|gather|keep|file|check|submit|apply|contact|open|use|read|study|prepare|"
+    r"ensure|make sure|do not|don't|avoid|consider|plan|start|talk|call|log in|sign up|pay|upload|go to|note|"
+    r"here's what|next step|not covered|this part is not covered|see|refer|look|search|save|ask|write|list|"
+    r"compare|decide|choose|follow)\b", re.I)
+
+
+def needs_citation(unit: str, claim: str) -> bool:
+    """Does an uncited line state a fact that must be backed by the documents?
+    Headings, links, "Next step:" and plain advice without numbers do not need a citation."""
+    raw = unit.strip()
+    if len(claim) < 25 or re.match(r"^\s*\|?\s*:?-{3,}", raw):
+        return False
+    if re.fullmatch(r"(#+\s.*|\*\*[^*]+\*\*:?|\d+\.\s+\*\*[^*]+\*\*:?)", raw) or (raw.endswith(":") and len(raw) < 80):
+        return False  # headings
+    body = re.sub(r"^\s*([-*•]|\d+[.)]|[a-z][.)])\s*", "", raw)
+    body = re.sub(r"^\*\*[^*]{1,60}\*\*\s*[:–-]?\s*", "", body)  # "**Label**: ..."
+    if ADVICE_START.match(body) and not re.search(r"\d", body):
+        return False  # plain advice ("Visit Manak Online and create an account")
+    if re.search(r"https?://", body) and len(re.sub(r"https?://\S+", "", body).split()) < 12:
+        return False  # a link line
+    return True
+
+
+def tidy(text: str) -> str:
+    """After removals: drop headings with nothing under them, stray markers like [8.1], renumber lists."""
+    text = re.sub(r"\s*\[\d+\.\d+\]", "", text)
+    text = re.sub(r"(\[\d+\])\s*\((?:[ivx]+|[a-z])\)", r"\1", text)  # "[3] (d)" clause leftovers
+    lines = text.split("\n")
+    is_heading = lambda l: bool(re.fullmatch(r"\s*(#+\s.*|\*\*[^*]+\*\*:?|\d+\.\s+\*\*[^*]+\*\*:?)\s*", l))
+    out = []
+    for i, line in enumerate(lines):
+        if is_heading(line):
+            nxt = next((l for l in lines[i + 1:] if l.strip()), None)
+            if nxt is None or is_heading(nxt):
+                continue
+        out.append(line)
+    return renumber_lists(re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip())
+
+
 def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str, list[dict]]:
     """Check each cited sentence against its excerpt(s) with the local reranker (two batched calls).
     Keep supported citations; re-cite to a better excerpt if one supports it; else remove the sentence."""
@@ -186,15 +240,23 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
     from app import rerank
 
     lines = text.split("\n")
-    units = [(li, SENTENCE_SPLIT.split(line) if line.strip() else [line]) for li, line in enumerate(lines)]
-    claims = []  # (line index, unit index, claim text, cited numbers)
+    table_header = {i for i in range(len(lines) - 1) if re.match(r"^\s*\|?\s*:?-{3,}", lines[i + 1])}
+    def splittable(line: str) -> bool:  # only long prose lines are split into sentences (never headings/tables)
+        raw = line.strip()
+        return len(raw) > 200 and not raw.startswith(("|", "#", "**"))
+    units = [(li, SENTENCE_SPLIT.split(line) if splittable(line) else [line]) for li, line in enumerate(lines)]
+    claims = []  # (line index, unit index, claim text, cited numbers); cited = [] for an uncited fact
     for li, parts in units:
         for ui, unit in enumerate(parts):
             nums = [int(x) for x in re.findall(r"\[(\d+)\]", unit)]
-            claim = re.sub(r"\[\d+\]|\*\*|^\s*[-*\d.)]+\s*", "", unit).strip()
+            claim = re.sub(r"\[\d+\]|\*\*|^\s*[-*\d.)]+\s*|\|", " ", unit)
+            claim = " ".join(claim.split())
             cited = [n for n in dict.fromkeys(nums) if 1 <= n <= len(chunks)]
             if cited and len(claim) >= 25:
                 claims.append((li, ui, claim, cited))
+            elif not cited and li not in table_header and needs_citation(unit, claim):
+                claims.append((li, ui, claim, []))
+    is_row = {c: lines[li].lstrip().startswith("|") for li, _, c, _ in claims}
     # pass 1: each claim against the excerpts it cites
     def full(n: int) -> str:  # title and section count too ("BIS Act, 2016", "Section 29(3)")
         c = chunks[n - 1]
@@ -214,6 +276,8 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
         # short summary bullets ("Timeline: within 90 days of validity") are too terse for the cross-encoder:
         # accept them when most of their words are in the cited excerpt
         if len(claim.split()) <= 14 and words_covered(claim, n) >= 0.75:
+            return max(score, 0.5)
+        if is_row.get(claim) and words_covered(claim, n) >= 0.6:  # table rows read badly to a cross-encoder
             return max(score, 0.5)
         return score
 
@@ -245,12 +309,18 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
                 unit = re.sub(r"(?:\[\d+\])+", "".join(f"[{n}]" for n in good), unit, count=1)
                 unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
         elif best_alt[i][0] >= SUPPORT_THRESHOLD:
-            unit = re.sub(r"(?:\[\d+\])+", f"[{best_alt[i][1]}]", unit, count=1)
-            unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
-            removed.append({"sentence": claim, "action": f"re-cited to [{best_alt[i][1]}]", "score": round(best_alt[i][0], 3)})
+            n = best_alt[i][1]
+            if cited:
+                unit = re.sub(r"(?:\[\d+\])+", f"[{n}]", unit, count=1)
+                unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
+                removed.append({"sentence": claim, "action": f"re-cited to [{n}]", "score": round(best_alt[i][0], 3)})
+            else:  # an uncited fact that an excerpt does support: add the citation
+                unit = (re.sub(r"\s*\|\s*$", f" [{n}] |", unit.rstrip()) if unit.lstrip().startswith("|")
+                        else unit.rstrip() + f" [{n}]")
+                removed.append({"sentence": claim, "action": f"uncited: cited to [{n}]", "score": round(best_alt[i][0], 3)})
         else:
             unit = None
-            removed.append({"sentence": claim, "action": "removed",
+            removed.append({"sentence": claim, "action": "removed" if cited else "removed (uncited, not in documents)",
                             "score": round(max((s for _, s in first[i]), default=0), 3)})
         parts_by_line[li][ui] = unit
 
@@ -294,36 +364,80 @@ def finalize(text: str, chunks: list[dict], language: str) -> tuple[str, list[di
     return text, citations
 
 
+# ---------------------------------------------------------------- model-output cleanup and refusal log
+REFUSAL_LOG = config.ROOT / "data" / "refusals.jsonl"
+
+
+def clean_model_output(raw) -> str:
+    """Reasoning models (qwen3, gpt-oss) may return None, <think> blocks or odd citation styles.
+    Turn every citation style into [n] so a good answer is never thrown away as 'no citations'."""
+    text = raw or ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S | re.I)
+    text = re.sub(r"^.*?</think>", "", text, flags=re.S | re.I)          # unclosed think at the start
+    text = re.sub(r"【\s*(\d+)[^】]*】", r"[\1]", text)                   # 【3†L1-L4】 -> [3]
+    text = re.sub(r"\[\^(\d+)\]", r"[\1]", text)                          # [^3] -> [3]
+    text = re.sub(r"\[(?:Excerpt|Source|Ref|excerpt|source)\s*#?\s*(\d+)\]", r"[\1]", text)  # [Excerpt 3]
+    return text.strip()
+
+
+def log_refusal(question, provider, reason, raw, chunks, removed=None):
+    """Every refusal is written to data/refusals.jsonl with the raw model output, so we can see WHY."""
+    try:
+        with open(REFUSAL_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "question": question,
+                                "provider": provider, "reason": reason, "raw_output": (raw or "")[:4000],
+                                "chunks": [c["chunk_id"] for c in chunks],
+                                "removed": removed or []}, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[refusal-log] {e}")
+
+
 # ---------------------------------------------------------------- main entry
+def default_next_step(u: dict, lang: str) -> str:
+    """A 'Next step:' line with only an official link (no facts), used when the model left it out."""
+    role, text = u.get("user_role"), (u.get("standalone_question") or "").lower()
+    if role in ("consumer",) or "complain" in text or "huid" in text:
+        step = "check the product or HUID in the BIS CARE app (https://play.google.com/store/apps/details?id=com.bis.bisapp) and file a complaint if needed (https://www.bis.gov.in/consumer-overview/online-complaint-registration/?lang=en)"
+    elif re.search(r"\bcrs\b|electronic|led|mobile|charger|registration scheme", text):
+        step = "open the CRS portal (https://www.crsbis.in/BIS/registration-page.do) and start your registration"
+    elif role in ("manufacturer", "importer", "foreign_manufacturer") or "licen" in text:
+        step = "create your account on Manak Online (https://www.manakonline.in/) and start your application"
+    else:
+        step = "read the official page on the BIS website (https://www.bis.gov.in)"
+    return ("**अगला कदम:** " if lang == "hi" else "**Next step:** ") + step + "."
+
+
 def _result(answer, citations, provider, t0, trace, refused=False, cached=False):
+    u = trace.get("understand") or {}
+    profile = {k: u[k] for k in ("user_role", "product_or_topic", "user_goal") if k in u}
     return {"answer": answer, "citations": citations, "sources_used": len({c["source_id"] for c in citations}),
             "provider": provider, "latency_ms": int((time.time() - t0) * 1000), "refused": refused,
-            "cached": cached, "trace": trace}
-
-
-def with_history(q: str, history: list[dict] | None) -> str:
-    """Short follow-ups ("and the fee?", "what about renewal?") get the previous question as context."""
-    if not history or len(q.split()) > 8:
-        return q
-    last_user = next((t["content"] for t in reversed(history) if t["role"] == "user"), "")
-    return f"{last_user} {q}" if last_user else q
+            "cached": cached, "trace": trace, "profile": profile}  # the profile is kept even on "not covered"
 
 
 def ask(question: str, history: list[dict] | None = None, use_cache: bool = True) -> dict:
+    """history: earlier turns [{role, content, profile?}]; the last assistant turn's profile is remembered."""
     t0 = time.time()
     q = normalize(question)
     lang = detect_lang(q)
     if GREETING.match(q):
         return _result(prompts.GREETING_HI if lang == "hi" else prompts.GREETING_EN, [], "none", t0, {"step": "greeting"})
-    search_q = with_history(q, history)
-    key = _cache_key(search_q)
+
+    # step 1: understand the user (small, fast model): intent, role, goal, standalone question
+    prev = next((t["profile"] for t in reversed(history or []) if t.get("profile")), {})
+    t_u = time.time()
+    u = understand(question, history, prev)
+    profile = {k: u[k] for k in ("user_role", "product_or_topic", "user_goal")}
+    search_q = u["standalone_question"]
+    key = _cache_key(f"{search_q}|{u['intent']}|{u['user_role']}|{lang}")
     if use_cache and (hit := _cache("get", key)):
         hit["cached"], hit["latency_ms"] = True, int((time.time() - t0) * 1000)
         return hit
 
-    ret = retrieve(search_q)
+    ret = retrieve(search_q, extra_queries=u["sub_questions"], intent=u["intent"])
     chunks = fit_budget(ret["chunks"], search_q)
-    trace = {"retrieval": ret["trace"],
+    trace = {"understand": {**u, "ms": int((time.time() - t_u) * 1000) - ret["trace"]["ms"]},
+             "retrieval": ret["trace"],
              "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"], "section": c.get("section", "")[:80],
                          "scheme": c.get("scheme"), "page": c.get("page"), "rerank": c.get("rerank"),
                          "neighbour_of": c.get("neighbour_of")} for n, c in enumerate(chunks, start=1)]}
@@ -332,14 +446,20 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         return _result(not_covered, [], "none", t0, trace, refused=True)
 
     prompt = (f"CONTEXT:\n{format_context(chunks)}\n\n"
+              f"USER: role = {u['user_role']}; goal = {u['user_goal'] or 'not stated'}; "
+              f"product/topic = {u['product_or_topic'] or 'not stated'}\n"
+              f"INTENT: {u['intent']}\n"
               f"QUESTION ({'Hindi' if lang == 'hi' else 'English'}): {q}"
-              + (f"\n(Earlier question in this conversation: {search_q[:-len(q)].strip()})" if search_q != q else ""))
+              + (f"\n(Meaning, with the earlier conversation: {search_q})" if search_q.lower() != q.lower() else ""))
     t_gen = time.time()
     raw, provider = llm.generate_with_provider(prompt, system=prompts.ANSWER, temperature=0.1, max_tokens=4096)
     trace["generate_ms"] = int((time.time() - t_gen) * 1000)
-    body = split_body_and_sources(raw)
+    body = normalize_markers(split_body_and_sources(clean_model_output(raw)))
     if body.strip().upper().startswith("NOT_COVERED") or not re.search(r"\[\d+\]", body):
-        trace["note"] = "model found nothing relevant in the context"
+        trace["note"] = ("model said NOT_COVERED" if body.strip().upper().startswith("NOT_COVERED")
+                         else "empty answer" if not body.strip() else "answer had no [n] citations")
+        trace["raw_output"] = (raw or "")[:3000]
+        log_refusal(question, provider, trace["note"], raw, chunks)
         res = _result(not_covered, [], provider, t0, trace, refused=True)
         _cache("put", key, res)
         return res
@@ -352,13 +472,18 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         removed, n_checked = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
     trace["claims_checked"] = n_checked
     body = merge_duplicate_citations(body, chunks)  # re-citing can point two numbers at the same page again
-    body = renumber_lists(body)
+    body = tidy(body)
     trace["verify_ms"] = int((time.time() - t_ver) * 1000)
     trace["citation_check"] = removed
     if not re.search(r"\[\d+\]", body):
+        trace["note"] = "citation check removed every sentence"
+        log_refusal(question, provider, trace["note"], raw, chunks, removed)
         res = _result(not_covered, [], provider, t0, trace, refused=True)
         return res
+    if not re.search(r"(?im)^\W*next step\s*:", body):
+        body += "\n\n" + default_next_step(u, lang)
     answer, citations = finalize(body, chunks, lang)
     res = _result(answer, citations, provider, t0, trace)
+    res["profile"] = profile
     _cache("put", key, res)
     return res

@@ -50,6 +50,10 @@ def print_trace(res: dict):
         print(f"  citation check: {len(checks)} sentence(s) changed")
         for x in checks:
             print(f"    {x['action']} (score {x.get('score')}): {x['sentence'][:110]}")
+    u = tr.get("understand")
+    if u:
+        print(f"  understood: intent={u.get('intent')} role={u.get('user_role')} product={u.get('product_or_topic')!r}")
+        print(f"  goal: {u.get('user_goal')}  |  standalone: {u.get('standalone_question')}")
     if tr.get("note"):
         print(f"  note: {tr['note']}")
     print(RESET, end="")
@@ -102,7 +106,9 @@ def main():
         if show_trace:
             print_trace(res)
         print()
-        history += [{"role": "user", "content": q}, {"role": "assistant", "content": res["answer"][:1500]}]
+        history += [{"role": "user", "content": q},
+                    {"role": "assistant", "content": res["answer"][:1500], "profile": res.get("profile")}]
+        history = history[-12:]  # last 6 turns
 
 
 if __name__ == "__main__":

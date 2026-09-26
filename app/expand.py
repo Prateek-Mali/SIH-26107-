@@ -62,6 +62,8 @@ EXPANSIONS = [
      ["Foreign Manufacturers Certification Scheme FMCS application Authorized Indian Representative"]),
     (r"\b(crs|electronic\w*|it goods|mobile|laptop|led|charger|power bank|r-?number|compulsory registration)\b",
      ["Compulsory Registration Scheme Scheme-II electronics and IT goods registration", "Electronics and Information Technology Goods Requirement of Compulsory Registration Order"]),
+    (r"\bisi\b.*\bcrs\b|\bcrs\b.*\bisi\b",
+     ["Scheme-I licence to use Standard Mark ISI factory inspection", "Scheme-II Compulsory Registration Scheme self declaration registration electronics"]),
     (r"\b(scheme|schemes)\b.*\b(compare|comparison|difference|differ|vs|versus|types)\b|\b(compare|difference|types of)\b.*\bschemes?\b",
      ["conformity assessment schemes Scheme-I Scheme-II Scheme-IV Scheme-X Schedule-II"]),
     (r"\b(what is bis|about bis|purpose|role|functions?)\b",
@@ -129,6 +131,8 @@ def source_boosts(q: str) -> list[str]:
         boosts += ["consumer_complaint", "consumer_protection", "bis_care_app_page"]
     if re.search(r"foreign|import|fmcs", ql):
         boosts += ["fmcs_"]
+    if re.search(r"\bcrs\b|compulsory registration", ql) and re.search(r"\bisi\b|difference|compare|vs\b", ql):
+        boosts += ["cert_overview", "crs_standard_mark_guidelines", "marking_requirements", "ca_regulations_2018"]
     return list(dict.fromkeys(boosts))
 
 

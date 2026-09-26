@@ -7,6 +7,7 @@ import pickle
 import re
 import time
 from functools import lru_cache
+from pathlib import Path
 
 from app import config
 
@@ -51,7 +52,19 @@ def _qdrant():
 
     from qdrant_client import QdrantClient
 
-    client = QdrantClient(path=config.QDRANT_PATH)
+    try:
+        client = QdrantClient(path=config.QDRANT_PATH)
+    except RuntimeError as e:
+        if "already accessed" not in str(e):
+            raise
+        # another process (the chat, the API) holds the index: read a snapshot copy instead
+        import shutil
+        import tempfile
+
+        snap = Path(tempfile.mkdtemp(prefix="bis_qdrant_")) / "qdrant"
+        shutil.copytree(config.QDRANT_PATH, snap, ignore=shutil.ignore_patterns(".lock"))
+        print("[retrieval] index is open in another process; using a read-only snapshot copy")
+        client = QdrantClient(path=str(snap))
     atexit.register(client.close)  # close cleanly (avoids a noisy warning at interpreter exit)
     return client
 
@@ -167,7 +180,8 @@ def neighbours(chunk: dict) -> list[dict]:
     return [by_id[ids[j]] for j in (i - 1, i + 1) if 0 <= j < len(ids)]
 
 
-def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker: bool = True) -> dict:
+def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker: bool = True,
+             extra_queries: list[str] | None = None, intent: str | None = None) -> dict:
     """question -> {"chunks": final context (top_k + neighbours), "trace": {...}}.
 
     normalize -> rule-based expansions -> vector + BM25 for each query -> RRF -> exact product rows
@@ -178,7 +192,8 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
     q = expand.normalize(question)
     en = expand.to_english(q) if expand.detect_lang(q) == "hi" else ""
     rule_q = expand.normalize(en) if en else q          # rules are written for English
-    queries = [q] + ([rule_q] if en else []) + expand.expansions(rule_q)
+    extra = [expand.normalize(x) for x in (extra_queries or []) if x and x.strip()]
+    queries = list(dict.fromkeys([q] + ([rule_q] if en else []) + extra[:3] + expand.expansions(rule_q)))[:7]
     scheme = expand.detect_scheme(rule_q)
     boosts = expand.source_boosts(rule_q)
 
@@ -188,8 +203,9 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
 
     # exact product / IS-number rows from the scraped tables always come first
     has_is = bool(tools._norm_is(rule_q))
+    product_question = intent in (None, "check_requirement", "quick_fact", "advice")
     rows = [r for r in tools.lookup_product(rule_q, limit=6)
-            if has_is or r.get("full_match") or r.get("match_words", 0) >= 2]
+            if has_is or r.get("full_match") or (product_question and r.get("match_words", 0) >= 2)]
     row_ids = {r["chunk_id"] for r in rows}
     by_id, _ = _store()
     fused_ids = {c["chunk_id"] for c in fused}
@@ -239,7 +255,16 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
                 c["final_score"] = round(c.pop("score"), 5)
         except Exception as e:
             print(f"[retrieval] reranker skipped: {e}")
-    top = final[:top_k]
+    # product-table rows must not crowd out the documents that explain the rules (max 4 unless an IS number was asked)
+    top, n_rows = [], 0
+    for c in final:
+        is_row = "::row" in c["chunk_id"]
+        if is_row and not has_is and n_rows >= 4:
+            continue
+        n_rows += is_row
+        top.append(c)
+        if len(top) == top_k:
+            break
 
     # add the chunk before/after each of the top 5 so a rule is not cut in half
     have = {c["chunk_id"] for c in top}

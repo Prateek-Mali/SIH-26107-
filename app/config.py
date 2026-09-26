@@ -20,7 +20,8 @@ GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 # Second answer provider (free): https://console.groq.com
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")        # writes the answers
+GROQ_SMALL_MODEL = os.getenv("GROQ_SMALL_MODEL", "openai/gpt-oss-20b")  # fast step-1 "understand" call
 # Embeddings: "ollama" (local bge-m3, free, no daily limit) or "gemini" (1000/day on the free tier)
 EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "gemini").lower()
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
