@@ -90,3 +90,9 @@ def test_finalize_renumbers_by_first_use():
     assert [c["chunk_id"] for c in cites] == ["c3", "c1"]
     assert cites[0]["url"] == "https://x/a.pdf#page=3"
     json.dumps(cites)  # API-serialisable
+
+
+def test_notes_lose_their_citation_markers():
+    src = [{"chunk_id": "c1", "source_id": "s", "title": "T", "url": "https://x/", "page": None, "section": "", "text": "t"}]
+    text, cites = guard_mod.finalize("Fee is Rs 1000 [1]. Rules change often; confirm the latest on bis.gov.in [1].", src, "en")
+    assert "bis.gov.in." in text and "bis.gov.in [1]" not in text and len(cites) == 1

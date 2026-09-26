@@ -31,8 +31,13 @@ def citation_entry(n: int, chunk: dict) -> dict:
             "snippet": chunk["text"][:300]}
 
 
+NOTE_CITATION = re.compile(r"((?:Rules change often; confirm the latest on bis\.gov\.in|This is information, not legal advice)\.?)"
+                           r"((?:\s*\[\d+\])+)")
+
+
 def finalize(answer: str, sources: list[dict], language: str) -> tuple[str, list[dict]]:
     """Renumber [n] markers 1..N by first appearance; append the source list."""
+    answer = NOTE_CITATION.sub(lambda m: m.group(1).rstrip(".") + ".", answer)  # notes are not cited facts
     order = []
     for m in re.findall(r"\[(\d+)\]", answer):
         n = int(m)

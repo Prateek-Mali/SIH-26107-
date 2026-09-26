@@ -168,6 +168,12 @@ def row_text(row: dict, scheme: str) -> str:
     return " | ".join(parts)
 
 
+def row_label(row: dict) -> str:
+    """Citation label for a product row, e.g. 'IS 269: Ordinary Portland Cement'."""
+    label = ": ".join(x for x in (row.get("is_number", "").strip(), row.get("product", "").strip()) if x)
+    return (label or row.get("category", ""))[:120]
+
+
 def chunk_csvs(sources: dict) -> list[dict]:
     chunks = []
     for f in sorted((DATA / "structured").glob("*.csv")):
@@ -189,7 +195,7 @@ def chunk_csvs(sources: dict) -> list[dict]:
                 "doc_type": "qco",
                 "page": None,
                 "page_end": None,
-                "section": row.get("category", ""),
+                "section": row_label(row),
                 "lang": "en",
                 "text": row_text(row, scheme),
                 "date_downloaded": row.get("date_downloaded", ""),

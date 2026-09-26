@@ -27,7 +27,7 @@ from app import config  # noqa: E402
 from app.retrieval import embed_text, tokenize  # noqa: E402
 
 CACHE = ROOT / "index" / "embed_cache.jsonl"
-BATCH = 100
+BATCH = 20  # small batches stay under the free tier's tokens-per-minute limit
 
 
 def load_chunks() -> list[dict]:
@@ -43,8 +43,22 @@ def build_bm25(chunks: list[dict]):
     print(f"BM25: {len(chunks)} chunks -> {config.BM25_PATH.relative_to(ROOT)}")
 
 
+def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
+    """On a quota error wait for the per-minute window to reset, then retry the same batch."""
+    from app.llm import AllModelsBusy, embed
+
+    for attempt in range(tries):
+        try:
+            return embed(texts, task="RETRIEVAL_DOCUMENT")
+        except AllModelsBusy:
+            if attempt == tries - 1:
+                raise
+            print("  rate limited: waiting 65 s")
+            time.sleep(65)
+
+
 def embed_all(chunks: list[dict]) -> list[list[float]]:
-    from app.llm import EMBED_DIM, embed
+    from app.llm import EMBED_DIM
 
     cache = {}
     if CACHE.exists():
@@ -59,7 +73,7 @@ def embed_all(chunks: list[dict]) -> list[list[float]]:
     with CACHE.open("a", encoding="utf-8") as out:
         for start in range(0, len(todo), BATCH):
             batch = todo[start:start + BATCH]
-            vectors = embed([embed_text(chunks[i]) for i in batch], task="RETRIEVAL_DOCUMENT")
+            vectors = embed_with_wait([embed_text(chunks[i]) for i in batch])
             for i, v in zip(batch, vectors):
                 cache[keys[i]] = v
                 out.write(json.dumps({"key": keys[i], "vector": v}) + "\n")

@@ -45,9 +45,13 @@ def _bm25():
 
 @lru_cache(maxsize=1)
 def _qdrant():
+    import atexit
+
     from qdrant_client import QdrantClient
 
-    return QdrantClient(path=config.QDRANT_PATH)
+    client = QdrantClient(path=config.QDRANT_PATH)
+    atexit.register(client.close)  # close cleanly (avoids a noisy warning at interpreter exit)
+    return client
 
 
 def bm25_search(query: str, agent: str | None = None, n: int = CANDIDATES) -> list[dict]:

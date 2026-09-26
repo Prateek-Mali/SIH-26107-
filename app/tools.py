@@ -8,7 +8,7 @@ from app import config
 from app.retrieval import STOPWORDS
 
 sys.path.insert(0, str(config.ROOT / "scripts"))
-from chunk import SCHEME_NAMES, row_text  # noqa: E402  (same row text and ids as the index)
+from chunk import SCHEME_NAMES, row_label, row_text  # noqa: E402  (same row text and ids as the index)
 
 IS_NUMBER = re.compile(r"\bIS\s*[:\-]?\s*(\d{1,5})(?:\s*\(\s*part\s*(\d+)\s*\))?", re.I)
 
@@ -44,7 +44,7 @@ def product_rows() -> list[dict]:
             rows.append({
                 "chunk_id": f"{sid}::row{i:04d}", "source_id": sid, "agent": "product_qco",
                 "title": f"BIS list of products: {scheme}", "url": row.get("source_url", ""),
-                "doc_type": "qco", "page": None, "section": row.get("category", ""), "lang": "en",
+                "doc_type": "qco", "page": None, "section": row_label(row), "lang": "en",
                 "text": row_text(row, scheme), "date_downloaded": row.get("date_downloaded", ""),
                 "_is": _norm_is(row.get("is_number", "")), "_words": _words(row.get("product", "")),
             })
