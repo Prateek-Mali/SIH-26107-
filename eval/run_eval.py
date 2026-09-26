@@ -41,8 +41,14 @@ Reply with JSON only: {"faithfulness": 0.0-1.0, "relevancy": 0.0-1.0, "cited_sen
 "cited_supported": int, "correct": 0.0-1.0, "problems": "one short line"}"""
 
 
+WORDS = {"ninety": "90", "thirty": "30", "twenty one": "21", "five thousand": "5000", "two": "2", "five": "5", "ten": "10"}
+
+
 def norm(s: str) -> str:
-    return re.sub(r"[\s,.\-]", "", s.lower()).replace("₹", "rs").replace("rs.", "rs")
+    s = s.lower()
+    for w, d in WORDS.items():
+        s = re.sub(rf"\b{w}\b", d, s)
+    return re.sub(r"[\s,.\-]", "", s).replace("₹", "rs").replace("rs.", "rs")
 
 
 def key_fact_score(answer: str, facts: list[str]) -> float | None:
@@ -65,7 +71,8 @@ def judge(q: dict, res: dict) -> dict:
                           for c in res["citations"])
     prompt = (f"QUESTION: {q['question']}\n\nREFERENCE: {q['expected_answer']}\n\nANSWER:\n{body}\n\nSOURCES:\n{sources}")
     try:
-        text, _ = llm.generate_with_provider(prompt, system=JUDGE, temperature=0.0, max_tokens=800)
+        text, _ = llm.generate_with_provider(prompt, system=JUDGE, temperature=0.0, max_tokens=800,
+                                             model=config.GEMINI_ROUTER_MODEL)  # cheap judge model
         text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         return json.loads(text[text.find("{"): text.rfind("}") + 1])
     except Exception as e:
@@ -114,6 +121,7 @@ def main():
     ap.add_argument("--label", default="run")
     ap.add_argument("--compare", help="an earlier results_*.jsonl for a before/after table")
     ap.add_argument("--no-judge", action="store_true")
+    ap.add_argument("--resume", action="store_true", help="skip questions already in results_<label>.jsonl")
     ap.add_argument("--ragas", action="store_true", help="also compute RAGAS metrics (many LLM calls)")
     args = ap.parse_args()
 
@@ -129,8 +137,16 @@ def main():
     from app.retrieval import _store
 
     by_id, _ = _store()
+    out = EVAL / f"results_{args.label}.jsonl"
     rows = []
+    if args.resume and out.exists():
+        rows = [json.loads(l) for l in out.open(encoding="utf-8")]
+    elif out.exists():
+        out.unlink()
+    done = {r["id"] for r in rows}
     for i, q in enumerate(qs, 1):
+        if q["id"] in done:
+            continue
         t0 = time.time()
         try:
             res = ask(q["question"], use_cache=False)
@@ -153,16 +169,14 @@ def main():
             if isinstance(j.get("cited_sentences"), int) and j["cited_sentences"]:
                 row["citation_valid"] = min(1.0, j.get("cited_supported", 0) / j["cited_sentences"])
         rows.append(row)
+        with out.open("a", encoding="utf-8") as f:  # saved as we go, so a run can be resumed
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
         print(f"[{i}/{len(qs)}] {q['id']} {q['type']:20} refused={row['refused']!s:5} hit5={row['hit5']!s:5} "
               f"facts={pct(row['key_facts'])} faith={pct(row.get('faithfulness'))} {row['latency_s']}s {row['provider']}")
 
     if args.ragas:
         print("[eval] RAGAS: see eval/run_eval.py history; not run in this version to protect the API quota")
 
-    out = EVAL / f"results_{args.label}.jsonl"
-    with out.open("w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
     before = {}
     if args.compare and Path(args.compare).exists():
         before = {json.loads(l)["id"]: json.loads(l) for l in open(args.compare, encoding="utf-8")}

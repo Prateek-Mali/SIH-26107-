@@ -167,7 +167,7 @@ def neighbours(chunk: dict) -> list[dict]:
     return [by_id[ids[j]] for j in (i - 1, i + 1) if 0 <= j < len(ids)]
 
 
-def retrieve(question: str, top_k: int = 12, candidates: int = 40, use_reranker: bool = True) -> dict:
+def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker: bool = True) -> dict:
     """question -> {"chunks": final context (top_k + neighbours), "trace": {...}}.
 
     normalize -> rule-based expansions -> vector + BM25 for each query -> RRF -> exact product rows
@@ -176,17 +176,19 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 40, use_reranker:
 
     t0 = time.time()
     q = expand.normalize(question)
-    queries = [q] + expand.expansions(q)
-    scheme = expand.detect_scheme(q)
-    boosts = expand.source_boosts(q)
+    en = expand.to_english(q) if expand.detect_lang(q) == "hi" else ""
+    rule_q = expand.normalize(en) if en else q          # rules are written for English
+    queries = [q] + ([rule_q] if en else []) + expand.expansions(rule_q)
+    scheme = expand.detect_scheme(rule_q)
+    boosts = expand.source_boosts(rule_q)
 
     lists = [bm25_search(x, None, candidates) for x in queries]
     lists += vector_search_many(queries, candidates)
     fused = rrf(*lists)
 
     # exact product / IS-number rows from the scraped tables always come first
-    has_is = bool(tools._norm_is(q))
-    rows = [r for r in tools.lookup_product(q, limit=6)
+    has_is = bool(tools._norm_is(rule_q))
+    rows = [r for r in tools.lookup_product(rule_q, limit=6)
             if has_is or r.get("full_match") or r.get("match_words", 0) >= 2]
     row_ids = {r["chunk_id"] for r in rows}
     by_id, _ = _store()
@@ -226,7 +228,7 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 40, use_reranker:
 
         try:
             texts = [embed_text(c) for c in pool]
-            rs, dt = rerank.timed_scores(q, texts)
+            rs, dt = rerank.timed_scores(rule_q, texts)  # the reranker is English-only
             rerank_ms = int(dt * 1000)
             for c, r in zip(pool, rs):
                 c["rerank"] = round(r, 4)
@@ -251,7 +253,7 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 40, use_reranker:
                     context.append({**nb, "neighbour_of": c["chunk_id"]})
     return {
         "question": q, "chunks": context,
-        "trace": {"queries": queries, "scheme": scheme, "boosts": boosts,
+        "trace": {"queries": queries, "translated": en, "scheme": scheme, "boosts": boosts,
                   "vector": _vector_error if time.time() < _vector_paused_until else "ok",
                   "candidates": len(fused), "after_dedupe": len(pool), "rerank_ms": rerank_ms,
                   "ms": int((time.time() - t0) * 1000)},

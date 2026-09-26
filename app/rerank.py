@@ -1,6 +1,6 @@
 """Local cross-encoder (ONNX, CPU): relevance scores for (query, passage) pairs.
 
-Model: RERANK_MODEL (default Xenova/ms-marco-MiniLM-L-12-v2, ~120 MB, fast on an Intel CPU).
+Model: RERANK_MODEL (default BAAI/bge-reranker-base, ONNX, ~1 GB, CPU).
 Used (1) as one vote when ranking retrieved chunks and (2) to check that a cited sentence is
 supported by its chunk. Scores are probabilities in [0, 1] (sigmoid of the model's logit).
 """
@@ -10,8 +10,8 @@ import threading
 import time
 from functools import lru_cache
 
-MODEL = os.getenv("RERANK_MODEL", "Xenova/ms-marco-MiniLM-L-12-v2")
-MAX_CHARS = 1200
+MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+MAX_CHARS = 800
 _lock = threading.Lock()
 
 
@@ -40,11 +40,12 @@ def scores(query: str, passages: list[str]) -> list[float]:
 
 
 def pair_scores(pairs: list[tuple[str, str]]) -> list[float]:
-    """Score (sentence, passage) pairs that have different queries."""
-    out = []
-    for q, p in pairs:
-        out += scores(q, [p])
-    return out
+    """Score many (sentence, passage) pairs in one batched call."""
+    if not pairs:
+        return []
+    with _lock:
+        raw = list(_model().rerank_pairs([(q, p[:MAX_CHARS]) for q, p in pairs], batch_size=32))
+    return [1 / (1 + math.exp(-float(x))) for x in raw]
 
 
 def timed_scores(query: str, passages: list[str]) -> tuple[list[float], float]:

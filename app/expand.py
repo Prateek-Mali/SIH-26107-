@@ -7,6 +7,8 @@
     source_boosts(q)   source_id prefixes / doc types to prefer for this question
 """
 import re
+import unicodedata
+from functools import lru_cache
 
 ALIASES = [
     (re.compile(r"\b(?:ibs|bsi|b\.\s*i\.\s*s\.?|bureau of indian standards?)(?=\W|$)", re.I), "BIS"),
@@ -15,7 +17,7 @@ ALIASES = [
 
 
 def normalize(q: str) -> str:
-    q = " ".join(q.split())
+    q = unicodedata.normalize("NFC", " ".join(q.split()))
     for pat, rep in ALIASES:
         q = pat.sub(rep, q)
     # "is1293" / "IS-1293" / "IS:1293" -> "IS 1293" (but not "what is 17%")
@@ -41,6 +43,8 @@ EXPANSIONS = [
      ["penalty for contravention Section 29 punishable imprisonment fine", "improper use of Standard Mark Section 17 contravention"]),
     (r"\b(change|update|modify|amend)\w*.*\b(detail|name|address|owner\w*|premises|location|licen[cs]e|brand|scope)\w*|change of address|change in name",
      ["change in scope of licence change of name address ownership premises", "inclusion of additional varieties change in licence details"]),
+    (r"\b(fail\w*|not conform\w*|test failure|sample fail\w*)\b",
+     ["non-conformity of product during operation of licence corrective action", "suspension of licence non-conformity product recall"]),
     (r"\b(renew\w*)\b|नवीनीकरण", ["renewal of licence application Form-XII fees validity", "deferment of renewal of licence"]),
     (r"\b(suspen\w*|cancel\w*|revok\w*|non-?conform\w*|stop marking)\b",
      ["suspension of licence cancellation of licence non-conformity", "stop marking unsatisfactory performance action"]),
@@ -111,7 +115,7 @@ def source_boosts(q: str) -> list[str]:
         boosts += ["guide_renewal"]
     if re.search(r"change|variet|scope|address|name|owner", ql):
         boosts += ["guide_change_in_scope"]
-    if re.search(r"suspen|cancel|non-?conform|stop marking", ql):
+    if re.search(r"suspen|cancel|non-?conform|stop marking|\bfail", ql):
         boosts += ["guide_non_conformity", "guide_unsatisfactory_performance"]
     if re.search(r"grant|apply|application|process|steps|get started|new business|option|objection|deficien|reject", ql):
         boosts += ["guide_grant_of_licence", "cert_faq", "cert_process", "application_checklist"]
@@ -126,3 +130,27 @@ def source_boosts(q: str) -> list[str]:
     if re.search(r"foreign|import|fmcs", ql):
         boosts += ["fmcs_"]
     return list(dict.fromkeys(boosts))
+
+
+# Rule-based Hindi -> English keywords (no LLM call). Enough for the rules above to fire on Hindi questions;
+# the bge-m3 embeddings handle the Hindi text itself.
+HINDI_WORDS = {
+    "सज़ा": "penalty", "सजा": "penalty", "दंड": "penalty", "जुर्माना": "fine penalty", "कारावास": "imprisonment",
+    "लाइसेंस": "licence", "अनुज्ञप्ति": "licence", "नवीनीकरण": "renewal", "आवेदन": "application", "शुल्क": "fee",
+    "फीस": "fee", "दस्तावेज़": "documents", "दस्तावेज": "documents", "कागजात": "documents", "प्रमाणन": "certification",
+    "अनिवार्य": "compulsory", "ज़रूरी": "compulsory", "जरूरी": "compulsory", "पंजीकरण": "registration",
+    "हॉलमार्किंग": "hallmarking", "हॉलमार्क": "hallmark", "सोना": "gold", "सोने": "gold", "चांदी": "silver",
+    "आभूषण": "jewellery", "गहने": "jewellery", "जौहरी": "jeweller", "शिकायत": "complaint", "उपभोक्ता": "consumer",
+    "खिलौन": "toys", "सीमेंट": "cement", "स्टील": "steel", "इस्पात": "steel", "पानी": "water", "हेलमेट": "helmet",
+    "प्रेशर कुकर": "pressure cooker", "एलईडी": "LED", "बल्ब": "lamp", "मोबाइल": "mobile", "चार्जर": "charger",
+    "विदेशी": "foreign", "आयात": "import", "निर्माता": "manufacturer", "प्रक्रिया": "process", "कैसे": "how",
+    "क्या है": "what is", "मानक": "standard", "मार्क": "mark", "चेक": "check verify", "सत्यापित": "verify",
+    "रद्द": "cancellation", "निलंबन": "suspension", "परीक्षण": "testing", "नमूना": "sample",
+}
+
+
+def to_english(q: str) -> str:
+    """Hindi question -> English keywords from HINDI_WORDS (plus any Latin words kept as they are)."""
+    words = [en for hi, en in HINDI_WORDS.items() if hi in q]
+    latin = re.findall(r"[A-Za-z][A-Za-z0-9.\-/()]*|\d+", q)
+    return " ".join(dict.fromkeys(latin + words))

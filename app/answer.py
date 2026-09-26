@@ -71,6 +71,21 @@ def split_body_and_sources(text: str) -> str:
     return re.split(r"\n\s*(?:\*\*)?(?:Sources|स्रोत)(?:\*\*)?\s*:?\s*(?:\*\*)?\s*\n", text)[0].strip()
 
 
+def normalize_markers(text: str) -> str:
+    """[1, 2, 6] / [1-3] / [1,2] -> [1][2][6] so every later step sees one number per bracket."""
+    def expand(m: re.Match) -> str:
+        nums = []
+        for part in re.split(r"\s*,\s*", m.group(1)):
+            if "-" in part or "–" in part:
+                a, b = re.split(r"\s*[-–]\s*", part)[:2]
+                if a.isdigit() and b.isdigit() and int(b) - int(a) < 20:
+                    nums += list(range(int(a), int(b) + 1))
+            elif part.isdigit():
+                nums.append(int(part))
+        return "".join(f"[{n}]" for n in nums)
+    return re.sub(r"\[(\d+(?:\s*[,–-]\s*\d+)+)\]", expand, text)
+
+
 def merge_duplicate_citations(text: str, chunks: list[dict]) -> str:
     """[5][6][7] pointing to the same document page become one number."""
     first_for_key: dict[tuple, int] = {}
@@ -98,49 +113,109 @@ def _units(text: str) -> list[str]:
     return out
 
 
+NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8",
+                "nine": "9", "ten": "10", "fifteen": "15", "twenty": "20", "thirty": "30", "ninety": "90"}
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _numbers(text: str) -> set[str]:
+    """Numbers in a text, as digits: '₹5,000' -> '5000', 'two lakh' -> '2'. Ignores citation markers."""
+    t = re.sub(r"\[\d+\]", " ", text.lower())
+    nums = {n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", t)}
+    nums |= {NUMBER_WORDS[w] for w in re.findall(r"[a-z]+", t) if w in NUMBER_WORDS}
+    return {n for n in nums if n}
+
+
+def numbers_ok(claim: str, passage: str) -> bool:
+    """Every number the claim states must appear in the passage (catches 'ten years' vs 'two years')."""
+    return _numbers(claim) <= _numbers(passage)
+
+
+def best_window(claim: str, passage: str, size: int = 700) -> str:
+    """The part of a long excerpt that shares most words with the claim (the reranker reads ~800 chars)."""
+    if len(passage) <= size:
+        return passage
+    cw = set(_WORD.findall(claim.lower()))
+    best, best_score = passage[:size], -1
+    for start in range(0, len(passage) - size // 2, size // 3):
+        win = passage[start:start + size]
+        score = len(cw & set(_WORD.findall(win.lower())))
+        if score > best_score:
+            best, best_score = win, score
+    return best
+
+
 def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str, list[dict]]:
-    """Check each cited sentence against its excerpt with the local reranker. Re-cite to a better
-    excerpt if one supports it; remove the sentence if none does. Returns (text, removed)."""
+    """Check each cited sentence against its excerpt(s) with the local reranker (two batched calls).
+    Keep supported citations; re-cite to a better excerpt if one supports it; else remove the sentence."""
     if language != "en":
-        return text, []  # the local reranker is English-only; Hindi answers are not checked
+        return text, [], 0  # the local reranker is English-only; Hindi answers are not checked
     from app import rerank
 
-    removed, out_lines = [], []
-    for line in text.split("\n"):
-        new_parts = []
-        for unit in (SENTENCE_SPLIT.split(line) if line.strip() else [line]):
+    lines = text.split("\n")
+    units = [(li, SENTENCE_SPLIT.split(line) if line.strip() else [line]) for li, line in enumerate(lines)]
+    claims = []  # (line index, unit index, claim text, cited numbers)
+    for li, parts in units:
+        for ui, unit in enumerate(parts):
             nums = [int(x) for x in re.findall(r"\[(\d+)\]", unit)]
             claim = re.sub(r"\[\d+\]|\*\*|^\s*[-*\d.)]+\s*", "", unit).strip()
-            if not nums or len(claim) < 25:
-                new_parts.append(unit)
-                continue
             cited = [n for n in dict.fromkeys(nums) if 1 <= n <= len(chunks)]
-            sc = rerank.pair_scores([(claim, chunks[n - 1]["text"]) for n in cited]) if cited else []
-            good = [n for n, s in zip(cited, sc) if s >= SUPPORT_THRESHOLD]
-            if good:
-                if len(good) < len(cited):
-                    unit = re.sub(r"(?:\[\d+\])+", "".join(f"[{n}]" for n in good), unit, count=1)
-                    unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
-                new_parts.append(unit)
-                continue
-            # none of the cited excerpts supports it: is there another excerpt that does?
-            others = [n for n in range(1, len(chunks) + 1) if n not in cited]
-            alt = rerank.scores(claim, [chunks[n - 1]["text"] for n in others]) if others else []
-            best = max(zip(alt, others), default=(0, None))
-            if best[0] >= SUPPORT_THRESHOLD:
-                unit = re.sub(r"(?:\[\d+\])+", f"[{best[1]}]", unit, count=1)
+            if cited and len(claim) >= 25:
+                claims.append((li, ui, claim, cited))
+    # pass 1: each claim against the excerpts it cites
+    def full(n: int) -> str:  # title and section count too ("BIS Act, 2016", "Section 29(3)")
+        c = chunks[n - 1]
+        return f"{c['title']} {c.get('section', '')} {c['text']}"
+
+    def support(claim: str, cited: list[int], n: int, score: float) -> float:
+        # every number in the sentence must appear in what it cites (all its cited excerpts together)
+        return score if numbers_ok(claim, " ".join(full(m) for m in cited)) else 0.0
+
+    pairs = [(c, best_window(c, chunks[n - 1]["text"])) for _, _, c, cited in claims for n in cited]
+    it = iter(rerank.pair_scores(pairs))
+    first = [[(n, support(c, cited, n, next(it))) for n in cited] for _, _, c, cited in claims]
+    # pass 2: unsupported claims against every other excerpt
+    failing = [i for i, sc in enumerate(first) if not any(s >= SUPPORT_THRESHOLD for _, s in sc)]
+    # only excerpts that contain the claim's numbers are worth scoring (keeps the CPU cost low)
+    def overlap(claim: str, n: int) -> int:
+        return len(set(_WORD.findall(claim.lower())) & set(_WORD.findall(chunks[n - 1]["text"].lower())))
+
+    candidates = {i: sorted((n for n in range(1, len(chunks) + 1)
+                             if n not in claims[i][3] and numbers_ok(claims[i][2], full(n))),
+                            key=lambda n, c=claims[i][2]: -overlap(c, n))[:6]  # the 6 most similar excerpts
+                  for i in failing}
+    alt_pairs = [(claims[i][2], best_window(claims[i][2], chunks[n - 1]["text"])) for i in failing for n in candidates[i]]
+    it2 = iter(rerank.pair_scores(alt_pairs))
+    best_alt = {i: max(((next(it2), n) for n in candidates[i]), default=(0.0, None)) for i in failing}
+
+    removed = []
+    parts_by_line = {li: list(parts) for li, parts in units}
+    for i, (li, ui, claim, cited) in enumerate(claims):
+        unit = parts_by_line[li][ui]
+        good = [n for n, s in first[i] if s >= SUPPORT_THRESHOLD]
+        if good:
+            if len(good) < len(cited):
+                unit = re.sub(r"(?:\[\d+\])+", "".join(f"[{n}]" for n in good), unit, count=1)
                 unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
-                new_parts.append(unit)
-                removed.append({"sentence": claim, "action": f"re-cited to [{best[1]}]", "score": round(best[0], 3)})
-            else:
-                removed.append({"sentence": claim, "action": "removed", "score": round(max(sc, default=0), 3)})
-        joined = " ".join(p for p in new_parts if p is not None).rstrip()
+        elif best_alt[i][0] >= SUPPORT_THRESHOLD:
+            unit = re.sub(r"(?:\[\d+\])+", f"[{best_alt[i][1]}]", unit, count=1)
+            unit = re.sub(r"(?<=\])(?:\[\d+\])+", "", unit)
+            removed.append({"sentence": claim, "action": f"re-cited to [{best_alt[i][1]}]", "score": round(best_alt[i][0], 3)})
+        else:
+            unit = None
+            removed.append({"sentence": claim, "action": "removed",
+                            "score": round(max((s for _, s in first[i]), default=0), 3)})
+        parts_by_line[li][ui] = unit
+
+    out_lines = []
+    for li, line in enumerate(lines):
+        joined = " ".join(p for p in parts_by_line[li] if p is not None).rstrip()
         if line.strip() and not joined.strip():
             continue  # the whole line was removed
         if re.fullmatch(r"\s*([-*•]|\d+[.)])\s*", joined):
             continue
         out_lines.append(joined)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip(), removed
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip(), removed, len(claims)
 
 
 def finalize(text: str, chunks: list[dict], language: str) -> tuple[str, list[dict]]:
@@ -222,12 +297,14 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         _cache("put", key, res)
         return res
 
-    body = merge_duplicate_citations(body, chunks)
+    body = merge_duplicate_citations(normalize_markers(body), chunks)
     t_ver = time.time()
     try:
-        body, removed = verify_citations(body, chunks, lang)
+        body, removed, n_checked = verify_citations(body, chunks, lang)
     except Exception as e:  # never lose an answer because the checker failed; say so in the trace
-        removed = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}]
+        removed, n_checked = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
+    trace["claims_checked"] = n_checked
+    body = merge_duplicate_citations(body, chunks)  # re-citing can point two numbers at the same page again
     trace["verify_ms"] = int((time.time() - t_ver) * 1000)
     trace["citation_check"] = removed
     if not re.search(r"\[\d+\]", body):

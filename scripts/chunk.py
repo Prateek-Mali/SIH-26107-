@@ -75,6 +75,7 @@ def split_structure(lines: list[tuple[int | None, str]], doc_type: str = "") -> 
     (top container > scheme > numbered item). Each segment gets 'section' (the path) and 'scheme'."""
     word = {"act": "Section", "rule": "Rule", "regulation": "Regulation"}.get(doc_type, "")
     top = scheme = item = ""
+    sec_num = sec_title = ""  # current numbered section, for sub-section labels in Acts
     segs, cur = [], None
 
     def path() -> str:
@@ -109,7 +110,15 @@ def split_structure(lines: list[tuple[int | None, str]], doc_type: str = "") -> 
             title = numbered_title(m_num.group(1), m_num.group(2))
             if title:
                 item = title[:150]
+                sec_num, sec_title = m_num.group(1), title.split(". ", 1)[1] if ". " in title else ""
                 heading = True
+                sub = re.match(r"\((\d+)\)\s", m_num.group(2).strip())
+                if doc_type == "act" and sub:  # "29. (1) Any person..." starts sub-section (1)
+                    item = f"{sec_num}({sub.group(1)}) {sec_title}".strip()
+        elif doc_type == "act" and sec_num and (m_sub := re.match(r"^\s*\((\d+)\)\s+\S", line)):
+            # Acts: every sub-section is its own chunk, labelled "Section 29(3) Penalty for contravention"
+            item = f"{sec_num}({m_sub.group(1)}) {sec_title}".strip()[:150]
+            heading = True
         if cur is None or (heading and cur["lines"]):
             if cur and cur["lines"]:
                 segs.append(cur)
@@ -123,10 +132,10 @@ def split_structure(lines: list[tuple[int | None, str]], doc_type: str = "") -> 
     return [s for s in segs if s["text"]]
 
 
-def merge_small(segs: list[dict]) -> list[dict]:
+def merge_small(segs: list[dict], min_tokens: int = MIN_TOKENS) -> list[dict]:
     out = []
     for s in segs:
-        if out and n_tokens(out[-1]["text"]) < MIN_TOKENS and n_tokens(out[-1]["text"] + s["text"]) <= MAX_TOKENS:
+        if out and n_tokens(out[-1]["text"]) < min_tokens and n_tokens(out[-1]["text"] + s["text"]) <= MAX_TOKENS:
             prev = out[-1]
             prev["text"] += "\n" + s["text"]
             prev["page_end"] = s["page_end"]
@@ -169,7 +178,9 @@ def cap(seg: dict) -> list[dict]:
 
 def chunk_document(doc: dict) -> list[dict]:
     lines = [(p["page"], line) for p in doc["pages"] for line in p["text"].splitlines()]
-    segs = [c for s in merge_small(split_structure(lines, doc["doc_type"])) for c in cap(s)]
+    # Acts: keep sub-sections apart (penalties differ per sub-section); merge only tiny fragments
+    min_tokens = 25 if doc["doc_type"] == "act" else MIN_TOKENS
+    segs = [c for s in merge_small(split_structure(lines, doc["doc_type"]), min_tokens) for c in cap(s)]
     first_pages = "\n".join(p["text"] for p in doc["pages"][:4])
     base_scheme = doc.get("scheme") or scheme_for_source(doc["source_id"], doc.get("url", ""))
     title = better_title(doc, first_pages)

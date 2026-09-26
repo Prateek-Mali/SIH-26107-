@@ -44,7 +44,9 @@ def clients() -> list[genai.Client]:
         if not _clients:
             if not config.KEY_IS_SET:
                 raise RuntimeError("GEMINI_API_KEY is not set in .env")
-            _clients.extend(genai.Client(api_key=k) for k in config.GEMINI_API_KEYS)
+            # without a timeout a stalled request blocks forever; 30 s then the next model/provider takes over
+            _clients.extend(genai.Client(api_key=k, http_options=types.HttpOptions(timeout=30_000))
+                            for k in config.GEMINI_API_KEYS)
     return _clients
 
 
@@ -62,7 +64,7 @@ def model_chain(model: str) -> list[str]:
 
 
 def _is_network_error(e: Exception) -> bool:
-    return isinstance(e, (httpx.HTTPError, ConnectionError, TimeoutError))
+    return isinstance(e, (httpx.HTTPError, ConnectionError, TimeoutError)) or "timed out" in str(e).lower()
 
 
 def _is_fallback_error(e: Exception) -> bool:
@@ -87,7 +89,9 @@ def _call(fn: Callable[[genai.Client, str], object], models: list[str], rounds: 
                     if e.code == 404:          # model not available for this key
                         _cooldown[(k, model)] = float("inf")
                     elif e.code in SKIP_MODEL:
-                        _cooldown[(k, model)] = time.time() + COOLDOWN_S
+                        # a used-up daily quota will not come back in a minute: bench that model for an hour
+                        daily = "PerDay" in str(e) or "per day" in str(e).lower()
+                        _cooldown[(k, model)] = time.time() + (3600 if daily else COOLDOWN_S)
                         print(f"[llm] {model} (key {k + 1}): {e.code}, trying the next key/model")
                     elif e.code not in RETRY_LATER:
                         raise
@@ -154,13 +158,14 @@ def generate_json(prompt: str, system: str | None = None, model: str | None = No
     return json.loads(text)
 
 
-def ollama_generate(prompt: str, system: str | None, json_mode: bool, temperature: float) -> str:
+def ollama_generate(prompt: str, system: str | None, json_mode: bool, temperature: float,
+                    timeout: float = 300) -> str:
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body = {"model": config.OLLAMA_MODEL, "messages": messages, "stream": False,
             "options": {"temperature": temperature}}
     if json_mode:
         body["format"] = "json"
-    r = httpx.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=300)
+    r = httpx.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=timeout)
     r.raise_for_status()
     return r.json()["message"]["content"]
 
@@ -213,46 +218,69 @@ def groq_generate(prompt: str, system: str | None, temperature: float, max_token
     r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
                    headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
                    json={"model": config.GROQ_MODEL, "messages": messages, "temperature": temperature,
-                         "max_tokens": max_tokens}, timeout=120)
+                         "max_tokens": max_tokens}, timeout=CALL_TIMEOUT_S)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
 
+CALL_TIMEOUT_S = 30  # per LLM call, every provider
+
+
+def _gemini_once(prompt: str, system: str | None, temperature: float, max_tokens: int,
+                 model: str | None) -> tuple[str, str]:
+    """Exactly ONE Gemini call: the first (model, key) not cooling down. A 429/503 benches that
+    model+key (an hour for a used-up daily quota) and raises, so the caller moves to the next provider."""
+    for m in model_chain(model or config.GEMINI_MODEL):
+        for k, c in enumerate(clients()):
+            if _cooldown.get((k, m), 0) > time.time():
+                continue
+            try:
+                resp = c.models.generate_content(model=m, contents=prompt,
+                                                 config=_gen_config(system, False, temperature, max_tokens))
+                return resp.text or "", m
+            except errors.APIError as e:
+                if e.code == 404:
+                    _cooldown[(k, m)] = float("inf")
+                elif e.code in SKIP_MODEL:
+                    daily = "PerDay" in str(e) or "per day" in str(e).lower()
+                    _cooldown[(k, m)] = time.time() + (3600 if daily else COOLDOWN_S)
+                raise
+    raise AllModelsBusy("every Gemini model/key is cooling down after a 429")
+
+
 def generate_with_provider(prompt: str, system: str | None = None, temperature: float = 0.1,
-                           max_tokens: int = 4096) -> tuple[str, str]:
-    """Gemini (model chain, both keys, no waiting) -> Groq -> Ollama. Returns (text, provider label).
-    Quota/network errors move to the next provider at once; other errors are raised, never hidden."""
+                           max_tokens: int = 4096, model: str | None = None) -> tuple[str, str]:
+    """Groq -> Gemini (free) -> local Ollama. One attempt per provider, 30 s timeout, no retries:
+    a 429 / timeout / network error moves straight to the next provider. Returns (text, provider label).
+    Other errors (bad request, bad key) are raised, never hidden."""
     errors_seen = []
-    if config.KEY_IS_SET:
-        used = {}
-
-        def call(c, m):
-            resp = c.models.generate_content(model=m, contents=prompt,
-                                             config=_gen_config(system, False, temperature, max_tokens))
-            used["model"] = m
-            return resp
-
+    if config.GROQ_API_KEY:
         try:
-            resp = _call(call, model_chain(config.GEMINI_MODEL), rounds=1)
-            if resp.text:
-                return resp.text, f"gemini:{used['model']}"
+            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise ProviderError(f"Groq rejected GROQ_API_KEY ({e.response.status_code}): check the key in .env")
+            errors_seen.append(f"groq: HTTP {e.response.status_code}")
+        except httpx.HTTPError as e:
+            errors_seen.append(f"groq: {type(e).__name__}")
+    else:
+        errors_seen.append("groq: GROQ_API_KEY missing (free key at https://console.groq.com/keys)")
+    if config.KEY_IS_SET:
+        try:
+            text, m = _gemini_once(prompt, system, temperature, max_tokens, model)
+            if text:
+                return text, f"gemini:{m}"
             errors_seen.append("gemini: empty response")
         except Exception as e:
             if not _is_fallback_error(e):
                 raise
-            errors_seen.append(f"gemini: {str(e)[:100]}")
+            errors_seen.append(f"gemini: {str(e)[:80]}")
     else:
-        errors_seen.append("gemini: GEMINI_API_KEY missing (get one at https://aistudio.google.com/apikey)")
-    if config.GROQ_API_KEY:
-        try:
-            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
-        except httpx.HTTPError as e:
-            errors_seen.append(f"groq: {str(e)[:100]}")
-    else:
-        errors_seen.append("groq: GROQ_API_KEY missing (free key at https://console.groq.com)")
+        errors_seen.append("gemini: GEMINI_API_KEY missing (https://aistudio.google.com/apikey)")
     try:
         print(f"[llm] WARNING: using local Ollama {config.OLLAMA_MODEL} ({'; '.join(errors_seen)})")
-        return ollama_generate(prompt, system, False, temperature), f"ollama:{config.OLLAMA_MODEL}"
+        return (ollama_generate(prompt, system, False, temperature, timeout=CALL_TIMEOUT_S),
+                f"ollama:{config.OLLAMA_MODEL}")
     except httpx.HTTPError as e:
-        errors_seen.append(f"ollama: {e}")
+        errors_seen.append(f"ollama: {type(e).__name__}")
     raise ProviderError("No LLM provider could answer: " + " | ".join(errors_seen))

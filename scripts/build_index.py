@@ -65,7 +65,7 @@ def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
             time.sleep(65)
 
 
-def embed_all(chunks: list[dict], cached_only: bool = False) -> list[list[float] | None]:
+def embed_all(chunks: list[dict], cached_only: bool = False, core_only: bool = False) -> list[list[float] | None]:
     from app.llm import embed_model_id
 
     cache = {}
@@ -75,7 +75,8 @@ def embed_all(chunks: list[dict], cached_only: bool = False) -> list[list[float]
             cache[row["key"]] = row["vector"]
     keys = [hashlib.sha256(f"{embed_model_id()}:{embed_text(c)}".encode()).hexdigest()
             for c in chunks]
-    todo = [] if cached_only else [i for i, k in enumerate(keys) if k not in cache]
+    todo = [] if cached_only else [i for i, k in enumerate(keys) if k not in cache
+                                   and not (core_only and chunks[i]["source_id"].startswith("qco_"))]
     # Most useful first: core documents and product rows, then the bulk of individual QCO PDFs.
     todo.sort(key=lambda i: chunks[i]["source_id"].startswith("qco_"))
     print(f"Embeddings: {len(chunks) - len(todo)} cached, {len(todo)} to embed with {embed_model_id()}")
@@ -139,6 +140,8 @@ def main():
     ap.add_argument("--bm25-only", action="store_true")
     ap.add_argument("--cached-only", action="store_true",
                     help="build the vector index from already-cached embeddings only (no new embedding)")
+    ap.add_argument("--core-only", action="store_true",
+                    help="embed only non-QCO-PDF chunks now (the bulk QCO PDFs can be embedded later)")
     args = ap.parse_args()
     chunks = load_chunks()
     build_bm25(chunks)
@@ -147,7 +150,7 @@ def main():
     if config.EMBED_PROVIDER == "gemini" and not config.KEY_IS_SET:
         sys.exit("GEMINI_API_KEY is not set in .env: cannot build Gemini embeddings (set EMBED_PROVIDER=ollama "
                  "or use --bm25-only).")
-    build_qdrant(chunks, embed_all(chunks, cached_only=args.cached_only))
+    build_qdrant(chunks, embed_all(chunks, cached_only=args.cached_only, core_only=args.core_only))
 
 
 if __name__ == "__main__":
