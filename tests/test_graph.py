@@ -62,10 +62,9 @@ def test_multi_intent_routes_to_two_agents_and_guard_removes_unsupported(fake):
     assert "**Sources:**" in r["final_answer"] and not r["refused"]
 
 
-def test_out_of_scope_is_refused_without_retrieval(fake):
+def test_general_question_is_answered_without_retrieval(fake):
     r = answer("Who won the cricket world cup?")
-    assert r["refused"] is True
-    assert "only help with BIS" in r["final_answer"]
+    assert r["refused"] is False and r["final_answer"]
     assert [t["step"] for t in r["trace"]] == ["router", "direct"]
 
 
@@ -75,11 +74,19 @@ def test_greeting_skips_the_llm(fake):
     assert fake == []  # no model call at all
 
 
-def test_not_found_gives_official_link(fake, monkeypatch):
+def test_not_in_documents_still_answers_with_label(fake, monkeypatch):
     monkeypatch.setattr(specialist, "search", lambda q, agent=None, k=None: [])
     r = answer("I make LED bulbs, is ISI compulsory and what is the fee?")
-    assert r["refused"] and "could not find this in official BIS documents" in r["final_answer"]
-    assert "https://" in r["final_answer"]
+    assert not r["refused"] and r["final_answer"].startswith("*Not found in the official BIS documents")
+    assert r["citations"] == []
+
+
+def test_ibs_is_read_as_bis():
+    from app.agents.router import normalize
+    assert normalize("How do I register under IBS?") == "How do I register under BIS?"
+    assert normalize("B.I.S. licence") .startswith("BIS")
+    from app.tools import _norm_is
+    assert _norm_is("IS/IEC 62368: Part 1: 2023") == {"62368", "62368-1"}
 
 
 def test_finalize_renumbers_by_first_use():

@@ -8,7 +8,7 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
-from app import prompts
+from app import llm, prompts
 from app.agents.certification_agent import certification_node
 from app.agents.composer import composer_node
 from app.agents.guard import guard_node
@@ -27,14 +27,15 @@ SPECIALISTS = {
 
 
 def direct_node(state: State) -> dict:
-    """Greetings and out-of-scope questions: reply without retrieval."""
+    """Greetings get a short welcome; every other non-BIS question gets a normal chatbot answer."""
+    t0 = time.time()
     hi = state.get("language") == "hi"
     if state.get("is_greeting"):
-        text, refused = (prompts.GREETING_HI if hi else prompts.GREETING_EN), False
+        text, note = (prompts.GREETING_HI if hi else prompts.GREETING_EN), "greeting"
     else:
-        text, refused = (prompts.OUT_OF_SCOPE_HI if hi else prompts.OUT_OF_SCOPE_EN), True
-    return {"final_answer": text, "citations": [], "refused": refused,
-            "trace": [{"step": "direct", "note": "greeting" if state.get("is_greeting") else "out of scope"}]}
+        text, note = llm.general_answer(state["question"], state.get("history")), "general question: answered by the LLM"
+    return {"final_answer": text, "citations": [], "refused": False,
+            "trace": [{"step": "direct", "note": note, "ms": int((time.time() - t0) * 1000)}]}
 
 
 def after_router(state: State) -> list[str]:

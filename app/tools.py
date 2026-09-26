@@ -10,7 +10,7 @@ from app.retrieval import STOPWORDS
 sys.path.insert(0, str(config.ROOT / "scripts"))
 from chunk import SCHEME_NAMES, row_label, row_text  # noqa: E402  (same row text and ids as the index)
 
-IS_NUMBER = re.compile(r"\bIS\s*[:\-]?\s*(\d{1,5})(?:\s*\(\s*part\s*(\d+)\s*\))?", re.I)
+IS_NUMBER = re.compile(r"\bIS(?:\s*/\s*(?:IEC|ISO))?\s*[:\-]?\s*(\d{1,5})(?:\s*[:(]?\s*part\s*(\d+))?", re.I)
 
 
 def _norm_is(text: str) -> set[str]:

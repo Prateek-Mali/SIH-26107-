@@ -18,6 +18,9 @@ GEMINI_MODEL_FALLBACKS = [m.strip() for m in os.getenv(
 GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
     "GEMINI_ROUTER_FALLBACKS", "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash").split(",") if m.strip()]
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+# Embeddings: "ollama" (local bge-m3, free, no daily limit) or "gemini" (1000/day on the free tier)
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "gemini").lower()
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 QDRANT_PATH = str(ROOT / os.getenv("QDRANT_PATH", "index/qdrant"))
 TOP_K = int(os.getenv("TOP_K", "8"))

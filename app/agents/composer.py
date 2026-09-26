@@ -33,10 +33,12 @@ def composer_node(state: State) -> dict:
     found = {a: outputs[a] for a in intents if a in outputs and outputs[a]["answer"] != "NOT_FOUND"}
     missing = [a for a in intents if a not in found]
 
-    if not found:
-        return {"draft_answer": "", "sources": [], "refused": True,
-                "final_answer": not_found_message(language, intents[0] if intents else None),
-                "trace": [{"step": "composer", "note": "no specialist found an answer",
+    if not found:  # not in the official documents: still answer, clearly labelled
+        note = prompts.GENERAL_BIS_NOTE_HI if language == "hi" else prompts.GENERAL_BIS_NOTE_EN
+        text = llm.general_answer(state["question"], state.get("history"))
+        return {"draft_answer": "", "sources": [], "refused": False,
+                "final_answer": f"{note}\n\n{text}",
+                "trace": [{"step": "composer", "note": "not in documents: general answer from the LLM",
                            "ms": int((time.time() - t0) * 1000)}]}
 
     sources, index, parts = [], {}, {}

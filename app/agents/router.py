@@ -18,7 +18,7 @@ KEYWORDS = {
 
 
 BIS_TERMS = re.compile(
-    r"\b(bis|isi|crs|fmcs|qco|huid|hallmark\w*|indian standards?|is\s*[:\-]?\s*\d{2,5}|s\.?o\.?\s*\d+|"
+    r"\b(bis|isi|crs|fmcs|qco|huid|hallmark\w*|indian standards?|(?-i:IS)\s*[:/\-]?\s*\d{2,5}|s\.o\.\s*\d+|"
     r"quality control order|standard mark|manak|bureau of indian standards)\b|बीआईएस|हॉलमार्क|मानक", re.I)
 
 
@@ -29,7 +29,21 @@ def heuristic_route(question: str) -> dict:
             "is_greeting": bool(GREETING.match(question)), "out_of_scope": False, "search_query": question}
 
 
+ALIASES = [
+    (re.compile(r"\b(ibs|bsi|b\.\s*i\.\s*s\.?|bureau of indian standards?|bureau of indian standard)\b", re.I), "BIS"),
+    (re.compile(r"भारतीय मानक ब्यूरो"), "BIS"),
+]
+
+
+def normalize(question: str) -> str:
+    """Common misspellings of BIS (IBS, BSI, B.I.S) become BIS so search and routing find it."""
+    for pat, rep in ALIASES:
+        question = pat.sub(rep, question)
+    return question
+
+
 def route(question: str, history: list[dict] | None = None) -> dict:
+    question = normalize(question)
     if GREETING.match(question):
         hindi = bool(re.search(r"[ऀ-ॿ]", question))
         return {"intents": [], "language": "hi" if hindi else "en", "is_greeting": True,
@@ -54,7 +68,7 @@ def route(question: str, history: list[dict] | None = None) -> dict:
         "is_greeting": bool(out.get("is_greeting")) and not bis_terms,
         # a question naming BIS things is in scope even if the model says otherwise
         "out_of_scope": bool(out.get("out_of_scope")) and not bis_terms,
-        "search_query": (out.get("search_query") or question).strip(),
+        "search_query": normalize(out.get("search_query") or question).strip(),
     }
     if not result["intents"] and not (result["is_greeting"] or result["out_of_scope"]):
         result["intents"] = heuristic_route(question)["intents"]
@@ -64,4 +78,4 @@ def route(question: str, history: list[dict] | None = None) -> dict:
 def router_node(state: State) -> dict:
     t0 = time.time()
     r = route(state["question"], state.get("history"))
-    return {**r, "trace": [{"step": "router", **r, "ms": int((time.time() - t0) * 1000)}]}
+    return {**r, "question": normalize(state["question"]), "trace": [{"step": "router", **r, "ms": int((time.time() - t0) * 1000)}]}

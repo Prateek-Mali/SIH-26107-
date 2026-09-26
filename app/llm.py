@@ -28,6 +28,7 @@ EMBED_DIM = 768
 SKIP_MODEL = {429, 503}          # quota / overloaded: go to the next key or model now
 RETRY_LATER = {500, 502, 504}    # transient server errors: next option, then back off
 COOLDOWN_S = 60
+MAX_WAIT_S = 10  # never keep a user waiting long for a busy model; the next round tries every model again
 
 _clients: list[genai.Client] = []
 _cooldown: dict[tuple[int, str], float] = {}   # (key index, model) -> skip until
@@ -97,7 +98,7 @@ def _call(fn: Callable[[genai.Client, str], object], models: list[str], rounds: 
         if r < rounds - 1:
             # everything is cooling down or failing: wait for the earliest model to come back
             waits = [t - time.time() for t in _cooldown.values() if t != float("inf")]
-            time.sleep(min(max(min(waits, default=5), 2), COOLDOWN_S) + random.random())
+            time.sleep(min(max(min(waits, default=5), 2), MAX_WAIT_S) + random.random())
     raise AllModelsBusy(f"all Gemini models/keys unavailable: {last}")
 
 
@@ -162,8 +163,22 @@ def ollama_generate(prompt: str, system: str | None, json_mode: bool, temperatur
     return r.json()["message"]["content"]
 
 
+def embed_model_id() -> str:
+    """Identifies the embedding space; vectors from different models must never be mixed."""
+    if config.EMBED_PROVIDER == "ollama":
+        return f"ollama:{config.OLLAMA_EMBED_MODEL}"
+    return f"{config.GEMINI_EMBED_MODEL}:{EMBED_DIM}"
+
+
 def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT", rounds: int = 2) -> list[list[float]]:
     """Embed a batch. task: RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY. Same model always; keys rotate."""
+    if config.EMBED_PROVIDER == "ollama":  # local: no quota, no cost
+        # a search query must not wait behind a long indexing job: give up fast and let BM25 answer
+        timeout = 10 if task == "RETRIEVAL_QUERY" else 600
+        r = httpx.post(f"{config.OLLAMA_URL}/api/embed", json={"model": config.OLLAMA_EMBED_MODEL, "input": texts},
+                       timeout=timeout)
+        r.raise_for_status()
+        return r.json()["embeddings"]
     resp = _call(lambda c, m: c.models.embed_content(
         model=m, contents=texts,
         config=types.EmbedContentConfig(task_type=task, output_dimensionality=EMBED_DIM)),
@@ -183,3 +198,12 @@ def gemini_ocr(png: bytes) -> str:
         model=m, contents=[types.Part.from_bytes(data=png, mime_type="image/png"), OCR_PROMPT],
         config=types.GenerateContentConfig(temperature=0.0)), model_chain(config.GEMINI_MODEL), rounds=4)
     return resp.text or ""
+
+
+def general_answer(question: str, history: list[dict] | None = None) -> str:
+    """Plain chatbot answer from the model's own knowledge (no retrieval)."""
+    from app import prompts
+
+    convo = "".join(f"{t['role']}: {t['content'][:800]}\n" for t in (history or [])[-6:])
+    prompt = (f"Conversation so far:\n{convo}\n" if convo else "") + f"user: {question}"
+    return generate(prompt, system=prompts.GENERAL, temperature=0.3).strip()

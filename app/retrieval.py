@@ -2,6 +2,7 @@
 
     search(query, agent=None, k=8) -> list[chunk dict with 'score']
 """
+import os
 import pickle
 import re
 import time
@@ -26,7 +27,7 @@ def normalize_ids(text: str) -> str:
     """Make official numbers match however they are typed: IS 12330 / IS:12330 / IS12330 -> is12330,
     S.O. 191(E) / SO 191 (E) -> so191e, G.S.R. 1081(E) -> gsr1081e."""
     t = text.lower()
-    t = re.sub(r"\bis\s*[:\-]?\s*(\d{1,5})", r" is\1 \1 ", t)
+    t = re.sub(r"\bis(?:\s*/\s*(?:iec|iso))?\s*[:\-]?\s*(\d{1,5})", r" is\1 \1 ", t)
     t = re.sub(r"\bs\.?\s*o\.?\s*(?:no\.?\s*)?(\d{1,5})\s*\(\s*e\s*\)", r" so\1e ", t)
     t = re.sub(r"\bg\.?\s*s\.?\s*r\.?\s*(?:no\.?\s*)?(\d{1,5})\s*\(\s*e\s*\)", r" gsr\1e ", t)
     return t
@@ -55,9 +56,26 @@ def _qdrant():
     return client
 
 
+# Words people use -> words the official documents use.
+SYNONYMS = [
+    (r"\bisi\b", "standard mark"),
+    (r"\blicen[cs]e\b", "licence license"),
+    (r"\b(penalt\w*|punish\w*|fine)\b", "penalty punishable fine imprisonment contravention"),
+    (r"\b(fake|misuse|without (a )?licen[cs]e)\b", "contravention improper use standard mark"),
+    (r"\bcrs\b", "compulsory registration"),
+    (r"\bhuid\b", "hallmark unique identification"),
+    (r"\bregistration\b", "registration licence application"),
+]
+
+
+def expand_query(query: str) -> str:
+    extra = [rep for pat, rep in SYNONYMS if re.search(pat, query, re.I)]
+    return query + (" " + " ".join(extra) if extra else "")
+
+
 def bm25_search(query: str, agent: str | None = None, n: int = CANDIDATES) -> list[dict]:
     bm25, chunks = _bm25()
-    scores = bm25.get_scores(tokenize(query))
+    scores = bm25.get_scores(tokenize(expand_query(query)))
     order = sorted(range(len(chunks)), key=lambda i: -scores[i])
     out = []
     for i in order:
@@ -100,7 +118,7 @@ def search(query: str, agent: str | None = None, k: int | None = None) -> list[d
     k = k or config.TOP_K
     keyword = bm25_search(query, agent)
     vector = []
-    if time.time() >= _vector_paused_until:
+    if time.time() >= _vector_paused_until and not os.getenv("BIS_NO_VECTOR"):
         try:
             vector = vector_search(query, agent)
         except Exception as e:  # no key / quota / no vector index / network: keyword search still works

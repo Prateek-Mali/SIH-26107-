@@ -45,11 +45,19 @@ def build_bm25(chunks: list[dict]):
 
 def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
     """On a quota error wait for the per-minute window to reset, then retry the same batch."""
+    import httpx
+
     from app.llm import AllModelsBusy, embed
 
     for attempt in range(tries):
         try:
             return embed(texts, task="RETRIEVAL_DOCUMENT")
+        except httpx.HTTPError as e:  # local Ollama restarting or overloaded
+            if attempt == tries - 1:
+                raise
+            print(f"  embedding server error ({type(e).__name__}); retrying in 15 s")
+            time.sleep(15)
+            continue
         except AllModelsBusy:
             if attempt == tries - 1 or "PerDay" in str(sys.exc_info()[1]):
                 raise
@@ -58,23 +66,24 @@ def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
 
 
 def embed_all(chunks: list[dict]) -> list[list[float]]:
-    from app.llm import EMBED_DIM
+    from app.llm import embed_model_id
 
     cache = {}
     if CACHE.exists():
         for line in CACHE.open(encoding="utf-8"):
             row = json.loads(line)
             cache[row["key"]] = row["vector"]
-    keys = [hashlib.sha256(f"{config.GEMINI_EMBED_MODEL}:{EMBED_DIM}:{embed_text(c)}".encode()).hexdigest()
+    keys = [hashlib.sha256(f"{embed_model_id()}:{embed_text(c)}".encode()).hexdigest()
             for c in chunks]
     todo = [i for i, k in enumerate(keys) if k not in cache]
     # Most useful first: core documents and product rows, then the bulk of individual QCO PDFs.
     todo.sort(key=lambda i: chunks[i]["source_id"].startswith("qco_"))
-    print(f"Embeddings: {len(chunks) - len(todo)} cached, {len(todo)} to embed with {config.GEMINI_EMBED_MODEL}")
+    print(f"Embeddings: {len(chunks) - len(todo)} cached, {len(todo)} to embed with {embed_model_id()}")
     CACHE.parent.mkdir(parents=True, exist_ok=True)
     with CACHE.open("a", encoding="utf-8") as out:
-        for start in range(0, len(todo), BATCH):
-            batch = todo[start:start + BATCH]
+        size = 8 if config.EMBED_PROVIDER == "ollama" else BATCH  # small batches keep local Ollama stable
+        for start in range(0, len(todo), size):
+            batch = todo[start:start + size]
             try:
                 vectors = embed_with_wait([embed_text(chunks[i]) for i in batch])
             except Exception as e:
@@ -88,8 +97,9 @@ def embed_all(chunks: list[dict]) -> list[list[float]]:
                 cache[keys[i]] = v
                 out.write(json.dumps({"key": keys[i], "vector": v}) + "\n")
             out.flush()
-            print(f"  embedded {min(start + BATCH, len(todo))}/{len(todo)}")
-            time.sleep(1)  # stay under free-tier rate limits
+            print(f"  embedded {min(start + size, len(todo))}/{len(todo)}")
+            if config.EMBED_PROVIDER != "ollama":
+                time.sleep(1)  # stay under free-tier rate limits
     return [cache.get(k) for k in keys]
 
 
@@ -102,15 +112,26 @@ def build_qdrant(chunks: list[dict], vectors: list[list[float] | None]):
     if not points:
         print("Qdrant: no embeddings yet; keeping the previous vector index")
         return
-    client = QdrantClient(path=config.QDRANT_PATH)
-    if client.collection_exists(config.COLLECTION):
-        client.delete_collection(config.COLLECTION)
+    # Build into a fresh folder, then swap it in: a running API/chat keeps its (old) index open
+    # without blocking the build, and picks up the new one on restart.
+    import shutil
+
+    final, tmp = Path(config.QDRANT_PATH), Path(config.QDRANT_PATH + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    client = QdrantClient(path=str(tmp))
     client.create_collection(config.COLLECTION,
                              vectors_config=VectorParams(size=len(points[0].vector), distance=Distance.COSINE))
     for start in range(0, len(points), 256):
         client.upsert(config.COLLECTION, points=points[start:start + 256])
     print(f"Qdrant: {client.count(config.COLLECTION).count} of {len(chunks)} chunks have vectors in '{config.COLLECTION}'")
     client.close()
+    old = Path(config.QDRANT_PATH + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if final.exists():
+        final.rename(old)
+    tmp.rename(final)
+    shutil.rmtree(old, ignore_errors=True)
+    print("Qdrant: new index swapped in (restart the API/chat to use it)")
 
 
 def main():

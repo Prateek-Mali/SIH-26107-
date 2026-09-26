@@ -4,7 +4,6 @@ import re
 import time
 
 from app import config, llm, prompts
-from app.agents.composer import not_found_message
 from app.agents.specialist import format_excerpts
 from app.agents.state import State
 
@@ -73,10 +72,11 @@ def guard_node(state: State) -> dict:
             note = f"removed {len(removed)} unsupported sentence(s)"
     except Exception as e:  # guard failure must not block an answer that is already cited
         answer, note = draft, f"guard check failed ({type(e).__name__}); answer kept as drafted"
-    if not re.search(r"\[\d+\]", answer):
-        intent = (state.get("intents") or [None])[0]
-        return {"final_answer": not_found_message(language, intent), "citations": [], "refused": True,
-                "trace": [{"step": "guard", "note": "no supported, cited sentence left: refused",
+    if not re.search(r"\[\d+\]", answer):  # nothing grounded left: answer anyway, clearly labelled
+        note = prompts.GENERAL_BIS_NOTE_HI if language == "hi" else prompts.GENERAL_BIS_NOTE_EN
+        text = llm.general_answer(state["question"], state.get("history"))
+        return {"final_answer": f"{note}\n\n{text}", "citations": [], "refused": False,
+                "trace": [{"step": "guard", "note": "no supported, cited sentence left: general answer",
                            "removed": removed, "ms": int((time.time() - t0) * 1000)}]}
     final, citations = finalize(answer, sources, language)
     return {"final_answer": final, "citations": citations, "refused": False,
