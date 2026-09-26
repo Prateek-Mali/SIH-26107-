@@ -1,82 +1,67 @@
 """Chat with the BIS Assistant in the terminal.
 
-    .venv/bin/python ui/chat_cli.py
+    .venv/bin/python ui/chat_cli.py            # runs the pipeline in this process
+    .venv/bin/python ui/chat_cli.py --api      # use a running API at http://localhost:8000
 
-Uses the running API (http://localhost:8000) if it is up, so the vector index is shared;
-otherwise runs the RAG graph directly in this process.
-Commands: /trace (toggle "How I answered"), /new (new conversation), /quit
+Commands: /trace (toggle "How I answered"), /new (new conversation), /nocache, /quit
 """
-import json
+import logging
 import os
 import sys
-import uuid
+import warnings
 from pathlib import Path
-
-import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("BIS_QUIET", "1")
+warnings.filterwarnings("ignore")
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+
+import httpx  # noqa: E402
 
 API = os.getenv("BIS_API_URL", "http://localhost:8000")
-DIM, BOLD, CYAN, GREEN, YELLOW, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[32m", "\033[33m", "\033[0m"
+DIM, BOLD, CYAN, GREEN, RED, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[32m", "\033[31m", "\033[0m"
 
 
-def api_up() -> bool:
-    try:
-        return httpx.get(f"{API}/health", timeout=3).status_code == 200
-    except httpx.HTTPError:
-        return False
+def ask_api(message: str, session: str) -> dict:
+    r = httpx.post(f"{API}/chat", json={"message": message, "session_id": session}, timeout=300)
+    r.raise_for_status()
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data
 
 
-def ask_api(message: str, session: str):
-    """Yields (event, data) from the API's SSE stream."""
-    with httpx.stream("POST", f"{API}/chat", json={"message": message, "session_id": session}, timeout=300) as r:
-        event = None
-        for line in r.iter_lines():
-            if line.startswith("event:"):
-                event = line[6:].strip()
-            elif line.startswith("data:") and event:
-                yield event, json.loads(line[5:].strip())
-                event = None
-
-
-def ask_local(message: str, history: list):
-    from app.graph import answer
-
-    r = answer(message, history)
-    yield "token", {"text": r["final_answer"]}
-    yield "trace", r["trace"]
-    yield "done", {"refused": r.get("refused"), "intents": r.get("intents", []), "latency_ms": r["latency_ms"]}
-
-
-def print_trace(trace: list):
+def print_trace(res: dict):
+    tr = res.get("trace", {})
+    rt = tr.get("retrieval", {})
     print(f"{DIM}── How I answered ──")
-    for t in trace:
-        ms = f" {t['ms'] / 1000:.1f}s" if t.get("ms") is not None else ""
-        if t["step"] == "router":
-            flags = [f for f in ("is_greeting", "out_of_scope") if t.get(f)]
-            print(f"  router{ms}: intents={t['intents']} lang={t['language']} {' '.join(flags)}")
-            print(f"    search query: {t.get('search_query', '')}")
-        elif "retrieved" in t:
-            print(f"  {t['step']} agent{ms}: {'answered' if t.get('found') else 'NOT_FOUND'}, "
-                  f"retrieved {len(t['retrieved'])}, cited {len(t.get('used', []))}")
-            for r in t["retrieved"]:
-                mark = "✓" if r["chunk_id"] in t.get("used", []) else " "
-                page = f" p.{r['page']}" if r.get("page") else ""
-                print(f"    {mark} {r['chunk_id']}{page}  ({r['score']})")
-        else:
-            print(f"  {t['step']}{ms}: {t.get('note', '')}")
-            for s in t.get("removed", []):
-                print(f"    removed: {s}")
+    if rt:
+        print(f"  queries: {rt.get('queries')}")
+        print(f"  scheme: {rt.get('scheme')}  boosts: {rt.get('boosts')}  vector search: {rt.get('vector')}")
+        print(f"  retrieval {rt.get('ms')} ms (reranker {rt.get('rerank_ms')} ms) · generation {tr.get('generate_ms')} ms"
+              f" · citation check {tr.get('verify_ms')} ms")
+    for c in tr.get("chunks", []):
+        nb = f" (neighbour of {c['neighbour_of']})" if c.get("neighbour_of") else ""
+        page = f" p.{c['page']}" if c.get("page") else ""
+        rr = f"{c['rerank']:.2f}" if isinstance(c.get("rerank"), (int, float)) else "  - "
+        print(f"  [{c['n']:2}] rerank {rr}  {c['chunk_id']}{page} [{c.get('scheme')}]{nb}")
+    checks = tr.get("citation_check") or []
+    if checks:
+        print(f"  citation check: {len(checks)} sentence(s) changed")
+        for x in checks:
+            print(f"    {x['action']} (score {x.get('score')}): {x['sentence'][:110]}")
+    if tr.get("note"):
+        print(f"  note: {tr['note']}")
     print(RESET, end="")
 
 
 def main():
-    use_api = api_up()
-    print(f"{BOLD}BIS Assistant{RESET} — ask about BIS law, certification, QCOs, hallmarking (English or हिन्दी).")
-    print(f"{DIM}Mode: {'API at ' + API if use_api else 'local (API not running)'} · "
-          f"commands: /trace  /new  /quit{RESET}\n")
-    show_trace, session, history = False, str(uuid.uuid4()), []
+    use_api = "--api" in sys.argv
+    if not use_api:
+        from app.answer import ask
+    print(f"{BOLD}BIS Assistant{RESET} — answers from official BIS documents, with sources (English or हिन्दी).")
+    print(f"{DIM}{'API ' + API if use_api else 'local pipeline'} · commands: /trace  /new  /nocache  /quit{RESET}\n")
+    show_trace, use_cache, session, history = False, True, os.urandom(8).hex(), []
     while True:
         try:
             q = input(f"{CYAN}{BOLD}You › {RESET}").strip()
@@ -85,49 +70,39 @@ def main():
             break
         if not q:
             continue
-        if q in ("/quit", "/exit", "exit", "quit"):
+        if q in ("/quit", "/exit"):
             break
-        if q == "/trace":
-            show_trace = not show_trace
-            print(f"{DIM}trace {'on' if show_trace else 'off'}{RESET}")
+        if q in ("/trace", "/new", "/nocache"):
+            if q == "/trace":
+                show_trace = not show_trace
+                print(f"{DIM}trace {'on' if show_trace else 'off'}{RESET}\n")
+            elif q == "/nocache":
+                use_cache = not use_cache
+                print(f"{DIM}answer cache {'on' if use_cache else 'off'}{RESET}\n")
+            else:
+                session, history = os.urandom(8).hex(), []
+                print(f"{DIM}new conversation{RESET}\n")
             continue
-        if q == "/new":
-            session, history = str(uuid.uuid4()), []
-            print(f"{DIM}new conversation{RESET}")
-            continue
-        print(f"{GREEN}{BOLD}BIS › {RESET}", end="", flush=True)
-        answer_text, trace, done = "", [], {}
+        print(f"{DIM}searching official BIS documents…{RESET}", end="", flush=True)
         try:
-            stream = ask_api(q, session) if use_api else ask_local(q, history)
-            for event, data in stream:
-                if event == "status":
-                    print(f"\r{DIM}{GREEN}BIS › {data['message']}…{RESET}\033[K", end="", flush=True)
-                elif event == "token":
-                    if not answer_text:
-                        print(f"\r{GREEN}{BOLD}BIS › {RESET}\033[K", end="")
-                    answer_text += data["text"]
-                    print(data["text"], end="", flush=True)
-                elif event == "trace":
-                    trace = data
-                elif event == "error":
-                    print(f"\n{YELLOW}{data['message']}{RESET}")
-                elif event == "done":
-                    done = data
-        except httpx.HTTPError as e:
-            print(f"\n{YELLOW}API error: {e}{RESET}")
-            continue
+            res = ask_api(q, session) if use_api else ask(q, history, use_cache=use_cache)
         except KeyboardInterrupt:
-            print(f"\n{DIM}(stopped){RESET}")
+            print(f"\r\033[K{DIM}(stopped){RESET}\n")
             continue
+        except Exception as e:  # real errors in red, never hidden
+            print(f"\r\033[K{RED}ERROR: {type(e).__name__}: {e}{RESET}\n")
+            continue
+        print("\r\033[K", end="")
+        print(f"{GREEN}{BOLD}BIS › {RESET}{res['answer']}")
+        footer = [res.get("provider", ""), f"{res['latency_ms'] / 1000:.1f} s",
+                  f"{res.get('sources_used', 0)} source document(s)"]
+        if res.get("cached"):
+            footer.append("from cache")
+        print(f"{DIM}[{' · '.join(x for x in footer if x)}]{RESET}")
+        if show_trace:
+            print_trace(res)
         print()
-        if done:
-            print(f"{DIM}[{done.get('latency_ms', 0) / 1000:.1f}s · agents: {', '.join(done.get('intents') or []) or '—'}"
-                  f"{' · refused' if done.get('refused') else ''}]{RESET}")
-        if show_trace and trace:
-            print_trace(trace)
-        if not use_api:
-            history += [{"role": "user", "content": q}, {"role": "assistant", "content": answer_text[:1500]}]
-        print()
+        history += [{"role": "user", "content": q}, {"role": "assistant", "content": res["answer"][:1500]}]
 
 
 if __name__ == "__main__":

@@ -22,19 +22,41 @@ MAX_TOKENS = 800
 OVERLAP_TOKENS = 100
 MIN_TOKENS = 120  # merge tiny structural pieces into the next one
 
-HEADING = re.compile(
-    r"""^\s*(
-        \#{1,4}\s+\S.*                                             # markdown heading
-      | (CHAPTER|Chapter|अध्याय)\s+[IVXLC\d]+\b.*                     # CHAPTER IV
-      | (SECTION|Section|RULE|Rule|REGULATION|Regulation|CLAUSE|Clause
-         |SCHEDULE|Schedule|ANNEX|Annex|ANNEXURE|Annexure|SCHEME|Scheme|PART|Part)
-        [\s\-–—]+[IVXLC\d]+[A-Z]?\b.*                              # Section 17, Schedule II
-      | (FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|TENTH)\s+SCHEDULE\b.*
-      | \d{1,3}[A-Z]?\.\s+(\(\d+\)\s*)?[A-Z(ऀ-ॿ].{0,200}   # 17. Prohibition of improper use...
-      | \*\*Q(uestion)?\s*\d*[.:)].*                               # FAQ question
-    )\s*$""",
-    re.X,
-)
+ROMAN = r"(?:X|IX|VIII|VII|VI|V|IV|III|II|I)"
+
+# Top-level containers: the whole line must be the heading (optionally with a short note in brackets).
+TOP = re.compile(
+    r"^\s*((?:THE\s+)?(?:FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH)\s+SCHEDULE"
+    r"|(?:SCHEDULE|Schedule)[\s\-–—]*(?:" + ROMAN + r"|\d+)"
+    r"|(?:CHAPTER|Chapter)\s+(?:[IVXLC]+|\d+)"
+    r"|(?:ANNEX(?:URE)?|Annex(?:ure)?)[\s\-–—]*(?:[IVX]+|\d+|[A-Z])?"
+    r"|(?:FORM|Form)[\s\-–—]*(?:[IVX]+|\d+|[A-Z])"
+    r")\s*[.:\-–—]?\s*(\([^)]{0,80}\))?\s*$")
+SCHEME = re.compile(r"^\s*(?:SCHEME|Scheme)[\s\-–—]*(" + ROMAN + r"|10|\d)\b\s*[.:\-–—]?\s*([A-Z][^,;]{0,80})?\s*$")
+NUMBERED = re.compile(r"^\s*(\d{1,3}[A-Z]?)\.\s+(.+)$")
+MARKDOWN = re.compile(r"^\s*(#{1,4})\s+(.+?)\s*#*\s*$")
+FAQ_Q = re.compile(r"^\s*\*\*\s*(?:Q(?:uestion)?\s*)?\d*[.:)]?\s*(.+?)\*\*\s*$")
+ARABIC = {"10": "X", **{str(i): r for i, r in enumerate(["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"]) if i}}
+
+
+def numbered_title(num: str, rest: str) -> str | None:
+    """'17. Prohibition to manufacture ... Mark. (1) No person' -> '17. Prohibition to ... Mark'.
+    Returns None for lines that are not headings (form fields ending in ':', lowercase continuations)."""
+    rest = rest.strip()
+    if not rest or not (rest[0].isupper() or rest[0] in "(\"'“" or "ऀ" <= rest[0] <= "ॿ"):
+        return None
+    if rest.startswith("("):  # "33. (1) Notwithstanding ..." -> no title of its own
+        return f"{num}."
+    if rest.endswith("?") and len(rest) < 200:  # FAQ question
+        return f"{num}. {rest}"
+    m = re.match(r"(.{3,120}?)(?:\.(?=\s|$)|\s[–—-]\s|:-|\.–|\.—)", rest)
+    title = m.group(1).strip() if m else rest.strip()
+    if rest.rstrip().endswith(":") and not m:  # form field such as "1. Name of Applicant:"
+        return None
+    if len(title) > 120 or title.endswith((",", ":", ";", "—", "-")) or re.search(r"\b(in|of|the|and|to)$", title):
+        return f"{num}."  # a real numbered item, but the line is a sentence, not a title
+    return f"{num}. {title}"
+
 
 try:
     import tiktoken
@@ -48,19 +70,53 @@ except Exception:  # offline fallback: rough estimate
         return len(text) // 4
 
 
-def split_structure(lines: list[tuple[int | None, str]]) -> list[dict]:
-    """Group (page, line) pairs into segments that start at headings."""
-    segs, cur = [], {"section": "", "page": None, "page_end": None, "lines": []}
+def split_structure(lines: list[tuple[int | None, str]], doc_type: str = "") -> list[dict]:
+    """Group (page, line) pairs into segments that start at headings, tracking the heading path
+    (top container > scheme > numbered item). Each segment gets 'section' (the path) and 'scheme'."""
+    word = {"act": "Section", "rule": "Rule", "regulation": "Regulation"}.get(doc_type, "")
+    top = scheme = item = ""
+    segs, cur = [], None
+
+    def path() -> str:
+        label = item
+        # Act sections / Rules / Regulations are numbered through the whole text, even inside chapters
+        if item and word and not scheme and (not top or top.lower().startswith("chapter")) and item[0].isdigit():
+            label = f"{word} {item}"
+        return " > ".join(x for x in (top, scheme, label) if x)[:200]
+
     for page, line in lines:
-        if HEADING.match(line) and cur["lines"]:
-            segs.append(cur)
-            cur = {"section": "", "page": None, "page_end": None, "lines": []}
-        if not cur["lines"]:
-            cur["section"] = re.sub(r"^#+\s*|\*\*", "", line.strip())[:150] if HEADING.match(line) else ""
-            cur["page"] = page
+        heading = False
+        m_top, m_scheme, m_num = TOP.match(line), SCHEME.match(line), NUMBERED.match(line)
+        m_md, m_faq = MARKDOWN.match(line), FAQ_Q.match(line)
+        if m_top:
+            top = " ".join(line.split())[:80]
+            item = ""
+            if not re.match(r"(?i)\s*(annex|form)", line):
+                scheme = ""
+            heading = True
+        elif m_scheme:
+            roman = ARABIC.get(m_scheme.group(1), m_scheme.group(1))
+            scheme = f"Scheme-{roman}" + (f" {m_scheme.group(2).strip()}" if m_scheme.group(2) else "")
+            item = ""
+            heading = True
+        elif m_md and not m_md.group(2).rstrip("*").rstrip().endswith((":", ",")):
+            item = re.sub(r"\*\*|\[|\]\([^)]*\)", "", m_md.group(2)).strip()[:150]
+            heading = True
+        elif m_faq and not m_faq.group(1).rstrip().endswith((":", ",")):
+            item = m_faq.group(1).strip()[:150]
+            heading = True
+        elif m_num:
+            title = numbered_title(m_num.group(1), m_num.group(2))
+            if title:
+                item = title[:150]
+                heading = True
+        if cur is None or (heading and cur["lines"]):
+            if cur and cur["lines"]:
+                segs.append(cur)
+            cur = {"section": path(), "scheme_heading": scheme, "page": page, "page_end": page, "lines": []}
         cur["lines"].append(line)
         cur["page_end"] = page
-    if cur["lines"]:
+    if cur and cur["lines"]:
         segs.append(cur)
     for s in segs:
         s["text"] = "\n".join(s.pop("lines")).strip()
@@ -75,7 +131,7 @@ def merge_small(segs: list[dict]) -> list[dict]:
             prev["text"] += "\n" + s["text"]
             prev["page_end"] = s["page_end"]
             if not prev["section"]:
-                prev["section"] = s["section"]
+                prev["section"], prev["scheme_heading"] = s["section"], s.get("scheme_heading", "")
         else:
             out.append(dict(s))
     return out
@@ -113,17 +169,28 @@ def cap(seg: dict) -> list[dict]:
 
 def chunk_document(doc: dict) -> list[dict]:
     lines = [(p["page"], line) for p in doc["pages"] for line in p["text"].splitlines()]
-    segs = [c for s in merge_small(split_structure(lines)) for c in cap(s)]
+    segs = [c for s in merge_small(split_structure(lines, doc["doc_type"])) for c in cap(s)]
+    first_pages = "\n".join(p["text"] for p in doc["pages"][:4])
+    base_scheme = doc.get("scheme") or scheme_for_source(doc["source_id"], doc.get("url", ""))
+    title = better_title(doc, first_pages)
+    doc_date = find_date(first_pages) if doc["pages"][0]["page"] is not None else ""
+    if not doc_date:  # fall back to the year in the title ("... Regulations, 2018")
+        years = re.findall(r"\b(19[5-9]\d|20[0-3]\d)\b", title)
+        doc_date = years[-1] if years else ""
     page_lang = {p["page"]: p["lang"] for p in doc["pages"]}
+    # drop fragments with almost no words (e.g. numbering left over after garbled Hindi lines are removed)
+    segs = [s for s in segs if len(re.findall(r"[A-Za-z\u0900-\u097F]", s["text"])) >= 40]
     chunks = []
     for i, s in enumerate(segs):
         chunks.append({
             "chunk_id": f"{doc['source_id']}::{i:04d}",
             "source_id": doc["source_id"],
-            "title": doc["title"],
+            "title": title,
             "url": doc["url"],
             "agent": doc["agent"],
             "doc_type": doc["doc_type"],
+            "scheme": scheme_from_heading(s.get("scheme_heading", "")) or base_scheme,
+            "doc_date": doc_date,
             "page": s["page"],
             "page_end": s["page_end"],
             "section": s["section"],
@@ -132,6 +199,85 @@ def chunk_document(doc: dict) -> list[dict]:
             "date_downloaded": doc.get("date_downloaded", ""),
         })
     return chunks
+
+
+MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+DATE_PATTERNS = [
+    re.compile(r"(\d{1,2})(?:st|nd|rd|th)?\s*(?:day of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s*,?\s*(\d{4})", re.I),
+    re.compile(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})", re.I),
+    re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b"),
+]
+
+
+def find_date(text: str) -> str:
+    """First plausible date in a document's opening pages (the notification date), as YYYY-MM-DD."""
+    best = None
+    for i, pat in enumerate(DATE_PATTERNS):
+        for m in pat.finditer(text[:6000]):
+            g = m.groups()
+            try:
+                if i == 0:
+                    d, mo, y = int(g[0]), MONTHS[g[1][:3].lower()], int(g[2])
+                elif i == 1:
+                    mo, d, y = MONTHS[g[0][:3].lower()], int(g[1]), int(g[2])
+                else:
+                    d, mo, y = int(g[0]), int(g[1]), int(g[2])
+            except (KeyError, ValueError):
+                continue
+            if 1950 <= y <= 2030 and 1 <= mo <= 12 and 1 <= d <= 31 and (best is None or m.start() < best[0]):
+                best = (m.start(), f"{y:04d}-{mo:02d}-{d:02d}")
+            break
+    return best[1] if best else ""
+
+
+SOURCE_SCHEMES = [  # source_id prefix -> scheme
+    ("guide_grant_coc", "IV"), ("guide_renewal_coc", "IV"), ("guide_coc_", "IV"), ("guide_", "I"),
+    ("fmcs_", "FMCS"), ("crs_", "II"), ("marking_requirements", "II"), ("scheme2_page", "II"),
+    ("hm_", "Hallmarking"), ("scheme1_products_table", "I"), ("cert_", "I"), ("simplified_procedure", "I"),
+    ("application_checklist", "I"), ("operating_manual", "I"), ("scheme4_page", "IV"),
+    ("schemeX_page", "X"), ("scheme_x_process", "X"), ("upcoming_qcos", "I"),
+]
+TABLE_SCHEME = {"products_scheme1": "I", "products_scheme2": "II", "products_scheme4": "IV",
+                "products_schemeX": "X", "products_fmcs": "FMCS", "upcoming_qcos": "I"}
+_pdf_scheme: dict[str, str] = {}
+
+
+def _load_pdf_schemes():
+    """QCO PDF url -> scheme of the product table that links it."""
+    if _pdf_scheme:
+        return
+    for f in (DATA / "structured").glob("*.csv"):
+        sch = TABLE_SCHEME.get(f.stem, "I")
+        for row in csv.DictReader(f.open(encoding="utf-8")):
+            for link in filter(None, (row.get("qco_pdf_url") or "").split(" | ")):
+                _pdf_scheme.setdefault(link.replace("://bis.gov.in", "://www.bis.gov.in"), sch)
+
+
+def scheme_for_source(source_id: str, url: str = "") -> str:
+    if source_id.startswith("qco_"):
+        _load_pdf_schemes()
+        return _pdf_scheme.get(url.replace("://bis.gov.in", "://www.bis.gov.in"), "I")
+    for prefix, sch in SOURCE_SCHEMES:
+        if source_id.startswith(prefix):
+            return sch
+    return "general"
+
+
+def scheme_from_heading(heading: str) -> str:
+    m = re.match(r"Scheme-(" + ROMAN + r")\b", heading or "")
+    return m.group(1) if m else ""
+
+
+def better_title(doc: dict, first_pages: str) -> str:
+    """QCO PDFs are named after file names like 'S.O 1081 (E)': use the order's own title if found."""
+    title = doc["title"]
+    if not doc["source_id"].startswith("qco_") or len(re.sub(r"[^A-Za-z]", "", title)) > 25:
+        return title
+    m = re.search(r"([A-Z][A-Za-z ,&()\-/]{5,120}?\((?:Quality Control|Compulsory Registration)\)[A-Za-z ()]*Order,?\s*\d{4})",
+                  " ".join(first_pages.split()))
+    if not m:
+        m = re.search(r"([A-Z][A-Za-z ,&()\-/]{5,80}? Rules,?\s*\d{4})", " ".join(first_pages.split()))
+    return f"{m.group(1).strip()} ({title})" if m else title
 
 
 SCHEME_NAMES = {
@@ -193,6 +339,8 @@ def chunk_csvs(sources: dict) -> list[dict]:
                 "url": row.get("source_url") or src.get("url", ""),
                 "agent": src.get("agent", "product_qco"),
                 "doc_type": "qco",
+                "scheme": TABLE_SCHEME.get(f.stem, "I"),
+                "doc_date": "",
                 "page": None,
                 "page_end": None,
                 "section": row_label(row),

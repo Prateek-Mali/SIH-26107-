@@ -68,7 +68,8 @@ def lookup_product(name_or_is_number: str, limit: int = 5) -> list[dict]:
     for r in rows:
         overlap = len(q & r["_words"])
         if overlap:
-            scored.append((overlap / (len(r["_words"]) ** 0.5 + 1), r))
+            full = overlap == len(r["_words"])  # every word of the product name is in the question
+            scored.append((overlap / (len(r["_words"]) ** 0.5 + 1), {**r, "match_words": overlap, "full_match": full}))
     scored.sort(key=lambda x: -x[0])
     return [_public(r) for _, r in scored[:limit]]
 

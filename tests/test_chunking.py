@@ -19,8 +19,8 @@ def test_splits_on_sections_and_keeps_pages():
     chunks = chunk_document(doc([{"page": 9, "text": body1, "lang": "en"},
                                  {"page": 10, "text": body2, "lang": "en"}]))
     sections = [c["section"] for c in chunks]
-    assert any(s.startswith("17. Prohibition") for s in sections)
-    c17 = next(c for c in chunks if c["section"].startswith("17."))
+    assert "CHAPTER IV > Section 17. Prohibition to manufacture, sell, etc" in sections
+    c17 = next(c for c in chunks if "Section 17." in c["section"])
     assert c17["page"] == 10
     assert chunks[0]["page"] == 9 and chunks[0]["chunk_id"] == "bis_act_2016::0000"
     assert set(chunks[0]) >= {"chunk_id", "source_id", "title", "url", "agent", "doc_type", "page",
@@ -63,3 +63,27 @@ def test_product_row_text():
     assert text.startswith("Product: Sulphate Resisting Portland Cement | IS 12330 | Scheme I")
     assert "QCO: Cement (Quality Control)Order, 2003 S.O. No. 191(E)" in text
     assert "PDF: https://www.bis.gov.in/SO-No-191(E).pdf" in text
+
+
+def test_heading_hierarchy_and_no_fragments():
+    from chunk import split_structure
+    lines = [(1, "SCHEDULE-II"), (1, "SCHEME-I"), (1, "5. Grant of Licence. (1) The applicant shall"),
+             (1, "Schedule – I, and may include the following, namely:-"), (2, "1. Name of Applicant:"),
+             (2, "(a) details of product")]
+    segs = split_structure(lines, "regulation")
+    assert [s["section"] for s in segs][-1] == "SCHEDULE-II > Scheme-I > 5. Grant of Licence"
+    assert all("namely" not in s["section"] and "Name of Applicant" not in s["section"] for s in segs)
+    assert segs[-1]["scheme_heading"] == "Scheme-I"
+
+
+def test_dates_and_schemes():
+    from chunk import find_date, scheme_for_source
+    assert find_date("New Delhi, the 10th March, 2026 S.O. 1246(E)") == "2026-03-10"
+    assert find_date("TUESDAY, MARCH 10, 2026") == "2026-03-10"
+    assert scheme_for_source("fmcs_faq") == "FMCS" and scheme_for_source("hm_overview") == "Hallmarking"
+    assert scheme_for_source("bis_act_2016") == "general" and scheme_for_source("cert_fee") == "I"
+
+
+def test_invisible_word_separators_become_spaces():
+    assert clean_page("\u202dlicence\u202c\u202dmay\u202c\u202dbe\u202c") == "licence may be"
+    assert clean_page("\u200bThe\u200b\u200bsample\u200b") == "The sample"

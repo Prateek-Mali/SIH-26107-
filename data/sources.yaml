@@ -439,6 +439,101 @@ sources:
     agent: hallmarking_consumer
     priority: 1
 
+  # ───────────── Added in Task 2 (application checklist, operating manual) ─────────────
+  - id: application_checklist
+    title: Check-list for application to be submitted by applicant to BIS
+    url: https://www.bis.gov.in/wp-content/uploads/2018/11/Checklist_for_Application.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: operating_manual_product_cert
+    title: Operating Manual for Product Certification (older, pre-2018 procedure)
+    url: https://bis.gov.in/PDF/pdf/rti/operating_manual.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+    note: "Older document. If it conflicts with the CA Regulations 2018 and their amendments, the Regulations win."
+
+  # Official procedure guidelines linked from the Product Certification Process page
+  - id: guide_grant_of_licence
+    title: "Guidelines for Grant of Licence (Scheme I, 25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/GrantofLicence-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_additional_scheme1
+    title: "Additional Guidelines for Scheme-I (DG Order No. 3 of 2020)"
+    url: https://www.bis.gov.in/wp-content/uploads/2020/09/BIS-DGO-No.3ofYear2020.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_non_conformity
+    title: "Guidelines for Dealing with Product Non-Conformity (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/Dealing-WithNon-Conformity-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_unsatisfactory_performance
+    title: "Guidelines for Dealing with Unsatisfactory Performance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/Dealing-With-Unsatisfactory-Performance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_change_in_scope
+    title: "Guidelines for Change in Scope of Licence"
+    url: https://www.bis.gov.in/wp-content/uploads/2021/05/Website-GuidelinesForChangeInScopeOfLicence_may.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_renewal
+    title: "Guidelines for Renewal of Licence"
+    url: https://www.bis.gov.in/wp-content/uploads/2025/03/RenewalGuidelines-WebsiteHosting.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_retesting
+    title: "Guidelines for Sample Coding and Retesting of Samples"
+    url: https://www.bis.gov.in/wp-content/uploads/2025/07/Guidelines-Samples-Coding-Retesting.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_factory_surveillance
+    title: "Guidelines for Factory Surveillance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/FactorySurveillance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_market_surveillance
+    title: "Guidelines for Market Surveillance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/MarketSurveillance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_cbtf_msme
+    title: "Guidelines for utilisation of Cluster Based Test Facility (CBTF) by MSMEs"
+    url: https://www.bis.gov.in/wp-content/uploads/2023/07/GuidelinesForUtilisationOfClusterLabByMSMEs.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_grant_coc
+    title: "Guidelines for Grant of Certificate of Conformity (Scheme IV)"
+    url: https://www.bis.gov.in/wp-content/uploads/2021/03/Grant-of-CoC-Guidelines.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_renewal_coc
+    title: "Guidelines for Renewal of Certificate of Conformity (Scheme IV)"
+    url: https://www.bis.gov.in/wp-content/uploads/2022/01/Guidelines-RenewalOf-CoC.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_coc_surveillance
+    title: "Guidelines for Surveillance under Scheme IV (Stampings/Laminations/Core of Transformers)"
+    url: https://www.bis.gov.in/wp-content/uploads/2024/07/CoC-Surveillance-Guidelines-BIS-Website.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+
 # ───────────── Links the bot SHOWS but never downloads (login / CAPTCHA / live tools) ─────────────
 official_links:
   verify_licence_huid_crs: "BIS CARE app — https://play.google.com/store/apps/details?id=com.bis.bisapp"

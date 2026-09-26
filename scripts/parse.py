@@ -117,6 +117,10 @@ def page_text(page: pymupdf.Page) -> str:
 
 def clean_page(text: str) -> str:
     text = text.replace("­", "").replace("ﬁ", "fi").replace("ﬂ", "fl")
+    # Some PDFs use zero-width spaces as word separators: turn them into real spaces.
+    text = re.sub(r"[\u200b\ufeff]+", " ", text)
+    text = re.sub(r"\u202c\s*\u202d", " ", text)  # some PDFs wrap every word in bidi marks: pairs are word gaps
+    text = re.sub(r"[\u202a-\u202e\u2066-\u2069]", "", text)  # other bidi marks (ZWJ/ZWNJ kept for Hindi)
     text = re.sub(r"(\w)-\n\s*(\w)", r"\1\2", text)  # hyphenated line breaks
     lines = [l.rstrip() for l in text.splitlines()]
     lines = [l for l in lines if not GAZETTE_RE.match(l)]
@@ -240,14 +244,18 @@ def main():
     OUT.parent.mkdir(parents=True, exist_ok=True)
     n_docs = n_pages = n_empty = n_ocr = 0
     with OUT.open("w", encoding="utf-8") as out:
-        for path in sorted((DATA / "raw").rglob("*")):
-            if path.suffix not in (".pdf", ".md"):
+        files = sorted((DATA / "raw").rglob("*")) + sorted((DATA / "manual").rglob("*"))
+        for path in files:
+            if path.suffix.lower() not in (".pdf", ".md"):
                 continue
             rel = str(path.relative_to(ROOT))
             agent = path.parent.name
-            sid = path.stem
+            manual = rel.startswith("data/manual/")
+            sid = path.stem if not manual else path.stem  # manual files are named <id>.pdf (see MISSING_DOCS.md)
             base_id = sid.split("__")[0]
             src = sources.get(base_id, {})
+            if manual and not src:  # any PDF dropped into data/manual/ is part of the knowledge base
+                src = {"title": re.sub(r"[_-]+", " ", path.stem).strip().title(), "url": f"(manual upload) {rel}"}
             logrow = log.get(rel, {})
             record = {"source_id": sid, "agent": agent, "path": rel}
             try:

@@ -102,11 +102,13 @@ def _call(fn: Callable[[genai.Client, str], object], models: list[str], rounds: 
     raise AllModelsBusy(f"all Gemini models/keys unavailable: {last}")
 
 
-def _gen_config(system, json_mode, temperature):
+def _gen_config(system, json_mode, temperature, max_tokens: int | None = None):
     return types.GenerateContentConfig(
         system_instruction=system,
         temperature=temperature,
+        max_output_tokens=max_tokens,
         response_mime_type="application/json" if json_mode else None,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),  # no AFC warning
     )
 
 
@@ -196,14 +198,61 @@ OCR_PROMPT = (
 def gemini_ocr(png: bytes) -> str:
     resp = _call(lambda c, m: c.models.generate_content(
         model=m, contents=[types.Part.from_bytes(data=png, mime_type="image/png"), OCR_PROMPT],
-        config=types.GenerateContentConfig(temperature=0.0)), model_chain(config.GEMINI_MODEL), rounds=4)
+        config=_gen_config(None, False, 0.0)), model_chain(config.GEMINI_MODEL), rounds=4)
     return resp.text or ""
 
 
-def general_answer(question: str, history: list[dict] | None = None) -> str:
-    """Plain chatbot answer from the model's own knowledge (no retrieval)."""
-    from app import prompts
 
-    convo = "".join(f"{t['role']}: {t['content'][:800]}\n" for t in (history or [])[-6:])
-    prompt = (f"Conversation so far:\n{convo}\n" if convo else "") + f"user: {question}"
-    return generate(prompt, system=prompts.GENERAL, temperature=0.3).strip()
+# ---------------------------------------------------------------- answer generation with providers
+class ProviderError(RuntimeError):
+    pass
+
+
+def groq_generate(prompt: str, system: str | None, temperature: float, max_tokens: int) -> str:
+    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
+                   headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
+                   json={"model": config.GROQ_MODEL, "messages": messages, "temperature": temperature,
+                         "max_tokens": max_tokens}, timeout=120)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def generate_with_provider(prompt: str, system: str | None = None, temperature: float = 0.1,
+                           max_tokens: int = 4096) -> tuple[str, str]:
+    """Gemini (model chain, both keys, no waiting) -> Groq -> Ollama. Returns (text, provider label).
+    Quota/network errors move to the next provider at once; other errors are raised, never hidden."""
+    errors_seen = []
+    if config.KEY_IS_SET:
+        used = {}
+
+        def call(c, m):
+            resp = c.models.generate_content(model=m, contents=prompt,
+                                             config=_gen_config(system, False, temperature, max_tokens))
+            used["model"] = m
+            return resp
+
+        try:
+            resp = _call(call, model_chain(config.GEMINI_MODEL), rounds=1)
+            if resp.text:
+                return resp.text, f"gemini:{used['model']}"
+            errors_seen.append("gemini: empty response")
+        except Exception as e:
+            if not _is_fallback_error(e):
+                raise
+            errors_seen.append(f"gemini: {str(e)[:100]}")
+    else:
+        errors_seen.append("gemini: GEMINI_API_KEY missing (get one at https://aistudio.google.com/apikey)")
+    if config.GROQ_API_KEY:
+        try:
+            return groq_generate(prompt, system, temperature, max_tokens), f"groq:{config.GROQ_MODEL}"
+        except httpx.HTTPError as e:
+            errors_seen.append(f"groq: {str(e)[:100]}")
+    else:
+        errors_seen.append("groq: GROQ_API_KEY missing (free key at https://console.groq.com)")
+    try:
+        print(f"[llm] WARNING: using local Ollama {config.OLLAMA_MODEL} ({'; '.join(errors_seen)})")
+        return ollama_generate(prompt, system, False, temperature), f"ollama:{config.OLLAMA_MODEL}"
+    except httpx.HTTPError as e:
+        errors_seen.append(f"ollama: {e}")
+    raise ProviderError("No LLM provider could answer: " + " | ".join(errors_seen))

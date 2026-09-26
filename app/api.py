@@ -1,17 +1,17 @@
-"""FastAPI server.
+"""FastAPI server:  uvicorn app.api:app --port 8000
 
-    uvicorn app.api:app --port 8000
-
-POST /chat {message, session_id} -> Server-Sent Events:
-    status    {"step", "message"}          as each graph step finishes
-    token     {"text"}                     the answer, in small pieces
-    citations [{n, title, section, page, url, ...}]
-    trace     [{step, ...}]                "How I answered"
-    done      {"refused", "language", "intents", "latency_ms"}
-GET /health, GET /sources
+POST /chat           {message, session_id} -> {answer, citations, sources_used, latency_ms, provider, trace}
+POST /chat/stream    same, as Server-Sent Events: status, token..., citations, trace, done
+POST /search         {query} -> the raw retrieval result (for checking accuracy)
+GET  /health         providers, embeddings, index counts
+GET  /sources        every indexed document with date and page count
+POST /admin/reindex  re-parse, re-chunk, re-index (including data/manual/) in the background
 """
 import json
 import re
+import subprocess
+import sys
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -22,24 +22,15 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import iterate_in_threadpool
 
 from app import config
-from app.graph import stream
+from app.answer import ask
+from app.retrieval import reload, retrieve
 
-app = FastAPI(title="BIS Assistant API", version="0.1")
+app = FastAPI(title="BIS Assistant API", version="0.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Short in-memory history per session, only so follow-up questions work. Never written to disk.
+# short in-memory history per session, only so follow-up questions work (never written to disk)
 HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=6))
-
-STATUS = {
-    "router": "Understanding the question",
-    "law": "Searched BIS Act, Rules and Regulations",
-    "certification": "Searched certification procedures and fees",
-    "product_qco": "Searched product lists and Quality Control Orders",
-    "hallmarking_consumer": "Searched hallmarking and consumer documents",
-    "composer": "Writing the answer",
-    "guard": "Checking every sentence against the sources",
-    "direct": "Replying",
-}
+REINDEX = {"running": False, "started": None, "finished": None, "log": ""}
 
 
 class ChatRequest(BaseModel):
@@ -47,67 +38,122 @@ class ChatRequest(BaseModel):
     session_id: str = Field("default", max_length=100)
 
 
-def sse(event: str, data) -> dict:
-    return {"event": event, "data": json.dumps(data, ensure_ascii=False)}
+class SearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2000)
 
 
-def pieces(text: str):
-    """Split the checked answer into small word groups for streaming."""
-    for m in re.finditer(r"\S+\s*", text):
-        yield m.group(0)
-
-
-def chat_events(message: str, session_id: str):
-    t0 = time.time()
-    state: dict = {"trace": []}
-    try:
-        for node, update in stream(message, list(HISTORY[session_id])):
-            trace = update.pop("trace", [])
-            state.update(update)
-            state["trace"] += trace
-            yield sse("status", {"step": node, "message": STATUS.get(node, node)})
-    except Exception as e:
-        yield sse("error", {"message": f"Sorry, something went wrong: {type(e).__name__}"})
-        print(f"[api] error: {e!r}")
-        return
-    answer = state.get("final_answer", "")
-    for p in pieces(answer):
-        yield sse("token", {"text": p})
-    yield sse("citations", state.get("citations", []))
-    yield sse("trace", state["trace"])
-    yield sse("done", {"refused": state.get("refused", False), "language": state.get("language", "en"),
-                       "intents": state.get("intents", []), "latency_ms": int((time.time() - t0) * 1000)})
-    short = answer.split("\n\n**Sources:**")[0].split("\n\n**स्रोत:**")[0]
+def _remember(session_id: str, message: str, result: dict):
+    short = re.split(r"\n\n\*\*(?:Sources|स्रोत):\*\*", result["answer"])[0][:1500]
     HISTORY[session_id].extend([{"role": "user", "content": message}, {"role": "assistant", "content": short}])
 
 
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    return EventSourceResponse(iterate_in_threadpool(chat_events(req.message, req.session_id)))
+def _chat(req: ChatRequest) -> dict:
+    result = ask(req.message, list(HISTORY[req.session_id]))
+    _remember(req.session_id, req.message, result)
+    return result
 
 
 @app.get("/")
 def root():
-    return {"name": "BIS Assistant API", "chat": "POST /chat {message, session_id} (Server-Sent Events)",
-            "docs": "/docs", "health": "/health", "sources": "/sources",
-            "ui": "run: streamlit run ui/streamlit_app.py  (then open http://localhost:8501)"}
+    return {"name": "BIS Assistant API", "docs": "/docs",
+            "endpoints": ["POST /chat", "POST /chat/stream", "POST /search", "GET /health", "GET /sources",
+                          "POST /admin/reindex"]}
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    try:
+        return _chat(req)
+    except Exception as e:  # show the real error, never a fake refusal
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    def events():
+        yield {"event": "status", "data": json.dumps({"message": "Searching official BIS documents"})}
+        try:
+            result = _chat(req)
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"message": f"{type(e).__name__}: {e}"})}
+            return
+        for m in re.finditer(r"\S+\s*", result["answer"]):
+            yield {"event": "token", "data": json.dumps({"text": m.group(0)}, ensure_ascii=False)}
+        yield {"event": "citations", "data": json.dumps(result["citations"], ensure_ascii=False)}
+        yield {"event": "trace", "data": json.dumps(result["trace"], ensure_ascii=False)}
+        yield {"event": "done", "data": json.dumps({k: result[k] for k in ("provider", "latency_ms", "sources_used",
+                                                                            "refused", "cached")})}
+    return EventSourceResponse(iterate_in_threadpool(events()))
+
+
+@app.post("/search")
+def search(req: SearchRequest):
+    r = retrieve(req.query)
+    return {"question": r["question"], "trace": r["trace"],
+            "chunks": [{k: c.get(k) for k in ("chunk_id", "title", "section", "scheme", "page", "doc_date", "url",
+                                              "adj_score", "rerank", "final_score", "neighbour_of")}
+                       | {"text": c["text"][:600]} for c in r["chunks"]]}
+
+
+def _count_points() -> int | None:
+    try:
+        from app.retrieval import _qdrant
+        return _qdrant().count(config.COLLECTION).count
+    except Exception:
+        return None
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "gemini_key_set": config.KEY_IS_SET, "model": config.GEMINI_MODEL,
-            "router_model": config.GEMINI_ROUTER_MODEL, "embed_model": config.GEMINI_EMBED_MODEL,
-            "bm25_index": config.BM25_PATH.exists(), "vector_index": (config.ROOT / config.QDRANT_PATH).exists()}
+    n_chunks = sum(1 for _ in config.CHUNKS_PATH.open()) if config.CHUNKS_PATH.exists() else 0
+    docs = {json.loads(l)["source_id"] for l in config.CHUNKS_PATH.open()} if n_chunks else set()
+    return {"status": "ok",
+            "llm": {"order": ["gemini", "groq", "ollama"], "gemini_model": config.GEMINI_MODEL,
+                    "gemini_keys": len(config.GEMINI_API_KEYS), "groq": bool(config.GROQ_API_KEY),
+                    "groq_model": config.GROQ_MODEL, "ollama_model": config.OLLAMA_MODEL},
+            "embeddings": config.EMBED_PROVIDER + ":" + (config.OLLAMA_EMBED_MODEL if config.EMBED_PROVIDER == "ollama"
+                                                         else config.GEMINI_EMBED_MODEL),
+            "index": {"chunks": n_chunks, "vectors": _count_points(), "documents": len(docs),
+                      "bm25": config.BM25_PATH.exists()},
+            "reindex": REINDEX}
 
 
 @app.get("/sources")
 def sources():
+    parsed = config.DATA / "processed" / "parsed.jsonl"
+    pages = {}
+    if parsed.exists():
+        for line in parsed.open(encoding="utf-8"):
+            d = json.loads(line)
+            pages[d["source_id"]] = len(d["pages"])
     docs: dict[str, dict] = {}
-    if config.CHUNKS_PATH.exists():
-        for line in config.CHUNKS_PATH.open(encoding="utf-8"):
-            c = json.loads(line)
-            d = docs.setdefault(c["source_id"], {
-                "source_id": c["source_id"], "title": c["title"], "url": c["url"], "agent": c["agent"],
-                "doc_type": c["doc_type"], "date_downloaded": c["date_downloaded"], "chunks": 0})
-            d["chunks"] += 1
-    return {"count": len(docs), "documents": sorted(docs.values(), key=lambda d: (d["agent"], d["title"]))}
+    for line in config.CHUNKS_PATH.open(encoding="utf-8"):
+        c = json.loads(line)
+        d = docs.setdefault(c["source_id"], {
+            "source_id": c["source_id"], "title": c["title"], "url": c["url"], "category": c["agent"],
+            "doc_type": c["doc_type"], "scheme": c.get("scheme"), "doc_date": c.get("doc_date"),
+            "date_downloaded": c["date_downloaded"], "pages": pages.get(c["source_id"]), "chunks": 0})
+        d["chunks"] += 1
+    return {"count": len(docs), "documents": sorted(docs.values(), key=lambda d: (d["category"], d["title"]))}
+
+
+def _reindex_job():
+    REINDEX.update(running=True, started=time.strftime("%H:%M:%S"), finished=None, log="")
+    log = []
+    try:
+        for cmd in (["scripts/parse.py"], ["scripts/chunk.py"], ["scripts/build_index.py"]):
+            p = subprocess.run([sys.executable, *cmd], cwd=config.ROOT, capture_output=True, text=True)
+            log.append(f"$ {' '.join(cmd)}\n{p.stdout[-1500:]}{p.stderr[-800:]}")
+            if p.returncode != 0:
+                break
+        reload()
+    finally:
+        REINDEX.update(running=False, finished=time.strftime("%H:%M:%S"), log="\n".join(log))
+
+
+@app.post("/admin/reindex")
+def admin_reindex():
+    if REINDEX["running"]:
+        return {"status": "already running", "started": REINDEX["started"]}
+    threading.Thread(target=_reindex_job, daemon=True).start()
+    return {"status": "started", "check": "GET /health -> reindex"}
