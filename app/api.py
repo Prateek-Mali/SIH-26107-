@@ -86,6 +86,13 @@ async def chat(req: ChatRequest):
     return EventSourceResponse(iterate_in_threadpool(chat_events(req.message, req.session_id)))
 
 
+@app.get("/")
+def root():
+    return {"name": "BIS Assistant API", "chat": "POST /chat {message, session_id} (Server-Sent Events)",
+            "docs": "/docs", "health": "/health", "sources": "/sources",
+            "ui": "run: streamlit run ui/streamlit_app.py  (then open http://localhost:8501)"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "gemini_key_set": config.KEY_IS_SET, "model": config.GEMINI_MODEL,
