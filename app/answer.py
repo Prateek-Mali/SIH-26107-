@@ -119,7 +119,23 @@ def merge_duplicate_citations(text: str, chunks: list[dict]) -> str:
     return re.sub(r"(?:\[\d+\])+", lambda m: fix(m.group(0)), text)
 
 
-SENTENCE_SPLIT = re.compile(r"(?<=[.!?।])\s+(?=[A-Z0-9\"'(*ऀ-ॿ])")
+# split after . ! ? । but not after abbreviations such as "Rs." "No." "S.O." "e.g." "i.e." "viz." "Sr."
+SENTENCE_SPLIT = re.compile(r"(?<![Rr]s\.)(?<!No\.)(?<!S\.O\.)(?<!e\.g\.)(?<!i\.e\.)(?<!viz\.)(?<!Sr\.)"
+                            r"(?<=[.!?।])\s+(?=[A-Z0-9\"'(*ऀ-ॿ])")
+
+
+def renumber_lists(text: str) -> str:
+    """After sentences are removed, numbered steps are renumbered 1, 2, 3 ... within each list."""
+    out, n = [], 0
+    for line in text.split("\n"):
+        m = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line)
+        if m:
+            n += 1
+            line = f"{m.group(1)}{n}. {m.group(3)}"
+        elif line.strip():
+            n = 0
+        out.append(line)
+    return "\n".join(out)
 
 
 def _units(text: str) -> list[str]:
@@ -336,6 +352,7 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         removed, n_checked = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
     trace["claims_checked"] = n_checked
     body = merge_duplicate_citations(body, chunks)  # re-citing can point two numbers at the same page again
+    body = renumber_lists(body)
     trace["verify_ms"] = int((time.time() - t_ver) * 1000)
     trace["citation_check"] = removed
     if not re.search(r"\[\d+\]", body):
