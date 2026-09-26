@@ -4,6 +4,7 @@
 """
 import pickle
 import re
+import time
 from functools import lru_cache
 
 from app import config
@@ -75,7 +76,7 @@ def vector_search(query: str, agent: str | None = None, n: int = CANDIDATES) -> 
 
     from app.llm import embed
 
-    vec = embed([query], task="RETRIEVAL_QUERY")[0]
+    vec = embed([query], task="RETRIEVAL_QUERY", rounds=1)[0]  # fail fast: BM25 is the fallback
     flt = Filter(must=[FieldCondition(key="agent", match=MatchValue(value=agent))]) if agent else None
     hits = _qdrant().query_points(config.COLLECTION, query=vec, query_filter=flt, limit=n).points
     return [{**h.payload, "vector_score": h.score} for h in hits]
@@ -91,12 +92,18 @@ def rrf(*ranked_lists: list[dict], k: int = RRF_K) -> list[dict]:
     return [{**items[cid], "score": s} for cid, s in sorted(scores.items(), key=lambda x: -x[1])]
 
 
+_vector_paused_until = 0.0
+
+
 def search(query: str, agent: str | None = None, k: int | None = None) -> list[dict]:
+    global _vector_paused_until
     k = k or config.TOP_K
     keyword = bm25_search(query, agent)
-    try:
-        vector = vector_search(query, agent)
-    except Exception as e:  # no key / no vector index / network: keyword search still works
-        print(f"[retrieval] vector search unavailable ({type(e).__name__}: {e}); using BM25 only")
-        vector = []
+    vector = []
+    if time.time() >= _vector_paused_until:
+        try:
+            vector = vector_search(query, agent)
+        except Exception as e:  # no key / quota / no vector index / network: keyword search still works
+            _vector_paused_until = time.time() + 600  # do not slow down every question; retry in 10 min
+            print(f"[retrieval] vector search paused for 10 min ({type(e).__name__}: {str(e)[:120]}); BM25 only")
     return rrf(vector, keyword)[:k]

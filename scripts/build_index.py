@@ -51,7 +51,7 @@ def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
         try:
             return embed(texts, task="RETRIEVAL_DOCUMENT")
         except AllModelsBusy:
-            if attempt == tries - 1:
+            if attempt == tries - 1 or "PerDay" in str(sys.exc_info()[1]):
                 raise
             print("  rate limited: waiting 65 s")
             time.sleep(65)
@@ -68,35 +68,48 @@ def embed_all(chunks: list[dict]) -> list[list[float]]:
     keys = [hashlib.sha256(f"{config.GEMINI_EMBED_MODEL}:{EMBED_DIM}:{embed_text(c)}".encode()).hexdigest()
             for c in chunks]
     todo = [i for i, k in enumerate(keys) if k not in cache]
+    # Most useful first: core documents and product rows, then the bulk of individual QCO PDFs.
+    todo.sort(key=lambda i: chunks[i]["source_id"].startswith("qco_"))
     print(f"Embeddings: {len(chunks) - len(todo)} cached, {len(todo)} to embed with {config.GEMINI_EMBED_MODEL}")
     CACHE.parent.mkdir(parents=True, exist_ok=True)
     with CACHE.open("a", encoding="utf-8") as out:
         for start in range(0, len(todo), BATCH):
             batch = todo[start:start + BATCH]
-            vectors = embed_with_wait([embed_text(chunks[i]) for i in batch])
+            try:
+                vectors = embed_with_wait([embed_text(chunks[i]) for i in batch])
+            except Exception as e:
+                if "PerDay" not in str(e):
+                    raise
+                left = len(todo) - start
+                print(f"  Daily embedding quota reached: {left} chunks left without vectors (BM25 still covers "
+                      f"them). Run build_index.py again tomorrow; cached vectors are reused.")
+                break
             for i, v in zip(batch, vectors):
                 cache[keys[i]] = v
                 out.write(json.dumps({"key": keys[i], "vector": v}) + "\n")
             out.flush()
             print(f"  embedded {min(start + BATCH, len(todo))}/{len(todo)}")
             time.sleep(1)  # stay under free-tier rate limits
-    return [cache[k] for k in keys]
+    return [cache.get(k) for k in keys]
 
 
-def build_qdrant(chunks: list[dict], vectors: list[list[float]]):
+def build_qdrant(chunks: list[dict], vectors: list[list[float] | None]):
     from qdrant_client import QdrantClient
     from qdrant_client.models import Distance, PointStruct, VectorParams
 
+    points = [PointStruct(id=str(uuid.uuid5(uuid.NAMESPACE_URL, c["chunk_id"])), vector=v, payload=c)
+              for c, v in zip(chunks, vectors) if v is not None]
+    if not points:
+        print("Qdrant: no embeddings yet; keeping the previous vector index")
+        return
     client = QdrantClient(path=config.QDRANT_PATH)
     if client.collection_exists(config.COLLECTION):
         client.delete_collection(config.COLLECTION)
     client.create_collection(config.COLLECTION,
-                             vectors_config=VectorParams(size=len(vectors[0]), distance=Distance.COSINE))
-    points = [PointStruct(id=str(uuid.uuid5(uuid.NAMESPACE_URL, c["chunk_id"])), vector=v, payload=c)
-              for c, v in zip(chunks, vectors)]
+                             vectors_config=VectorParams(size=len(points[0].vector), distance=Distance.COSINE))
     for start in range(0, len(points), 256):
         client.upsert(config.COLLECTION, points=points[start:start + 256])
-    print(f"Qdrant: {client.count(config.COLLECTION).count} points in '{config.COLLECTION}' at {config.QDRANT_PATH}")
+    print(f"Qdrant: {client.count(config.COLLECTION).count} of {len(chunks)} chunks have vectors in '{config.COLLECTION}'")
     client.close()
 
 

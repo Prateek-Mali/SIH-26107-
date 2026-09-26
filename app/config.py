@@ -14,7 +14,7 @@ GEMINI_ROUTER_MODEL = os.getenv("GEMINI_ROUTER_MODEL", "gemini-flash-lite-latest
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 # Used in order when a model hits its quota (429) or is overloaded (503). Quotas are per model.
 GEMINI_MODEL_FALLBACKS = [m.strip() for m in os.getenv(
-    "GEMINI_MODEL_FALLBACKS", "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-2.5-flash").split(",") if m.strip()]
+    "GEMINI_MODEL_FALLBACKS", "gemini-3.8-flash,gemini-3-flash-preview,gemini-2.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",") if m.strip()]
 GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
     "GEMINI_ROUTER_FALLBACKS", "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash").split(",") if m.strip()]
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")

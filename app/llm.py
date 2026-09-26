@@ -87,6 +87,7 @@ def _call(fn: Callable[[genai.Client, str], object], models: list[str], rounds: 
                         _cooldown[(k, model)] = float("inf")
                     elif e.code in SKIP_MODEL:
                         _cooldown[(k, model)] = time.time() + COOLDOWN_S
+                        print(f"[llm] {model} (key {k + 1}): {e.code}, trying the next key/model")
                     elif e.code not in RETRY_LATER:
                         raise
                 except Exception as e:
@@ -161,12 +162,12 @@ def ollama_generate(prompt: str, system: str | None, json_mode: bool, temperatur
     return r.json()["message"]["content"]
 
 
-def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
+def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT", rounds: int = 2) -> list[list[float]]:
     """Embed a batch. task: RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY. Same model always; keys rotate."""
     resp = _call(lambda c, m: c.models.embed_content(
         model=m, contents=texts,
         config=types.EmbedContentConfig(task_type=task, output_dimensionality=EMBED_DIM)),
-        [config.GEMINI_EMBED_MODEL], rounds=2)
+        [config.GEMINI_EMBED_MODEL], rounds=rounds)
     return [e.values for e in resp.embeddings]
 
 
