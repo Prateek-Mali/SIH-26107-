@@ -1,0 +1,5 @@
+{"id": "oos01", "question": "Who won the last cricket world cup?", "expected_answer": "REFUSE", "expected_source_ids": [], "type": "out_of_scope", "expected_intents": [], "language": "en", "reviewed": true}
+{"id": "oos02", "question": "Give me a recipe for paneer butter masala.", "expected_answer": "REFUSE", "expected_source_ids": [], "type": "out_of_scope", "expected_intents": [], "language": "en", "reviewed": true}
+{"id": "oos03", "question": "Write a Python function to sort a list.", "expected_answer": "REFUSE", "expected_source_ids": [], "type": "out_of_scope", "expected_intents": [], "language": "en", "reviewed": true}
+{"id": "oos04", "question": "What is the FDA approval process for medical devices in the USA?", "expected_answer": "REFUSE", "expected_source_ids": [], "type": "out_of_scope", "expected_intents": [], "language": "en", "reviewed": true}
+{"id": "oos05", "question": "आज दिल्ली में मौसम कैसा रहेगा?", "expected_answer": "REFUSE", "expected_source_ids": [], "type": "out_of_scope", "expected_intents": [], "language": "hi", "reviewed": true}

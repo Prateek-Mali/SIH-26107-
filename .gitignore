@@ -6,3 +6,6 @@ data/raw/
 index/
 .pytest_cache/
 .DS_Store
+data/processed/parsed.jsonl
+data/*.out
+eval/results.jsonl
