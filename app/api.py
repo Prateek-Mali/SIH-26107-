@@ -22,7 +22,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import iterate_in_threadpool
 
 from app import config
-from app.answer import ask
+from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pipeline
 from app.retrieval import reload, retrieve
 
 app = FastAPI(title="BIS Assistant API", version="0.2")

@@ -62,7 +62,7 @@ def print_trace(res: dict):
 def main():
     use_api = "--api" in sys.argv
     if not use_api:
-        from app.answer import ask
+        from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pipeline
     print(f"{BOLD}BIS Assistant{RESET} — answers from official BIS documents, with sources (English or हिन्दी).")
     print(f"{DIM}{'API ' + API if use_api else 'local pipeline'} · commands: /trace  /new  /nocache  /quit{RESET}\n")
     show_trace, use_cache, session, history = False, True, os.urandom(8).hex(), []

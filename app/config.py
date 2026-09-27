@@ -18,6 +18,8 @@ GEMINI_MODEL_FALLBACKS = [m.strip() for m in os.getenv(
 GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
     "GEMINI_ROUTER_FALLBACKS", "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash").split(",") if m.strip()]
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+# on = reasoning agent with tools (app/agent.py); off = the linear pipeline (app/answer.py)
+AGENT_MODE = os.getenv("AGENT_MODE", "on").lower()
 # Second answer provider (free): https://console.groq.com
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")        # writes the answers
