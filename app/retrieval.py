@@ -77,8 +77,6 @@ def open_local_qdrant(path: str):
 SYNONYMS = [
     (r"\bisi\b", "standard mark"),
     (r"\blicen[cs]e\b", "licence license"),
-    (r"\b(penalt\w*|punish\w*|fine)\b", "penalty punishable fine imprisonment contravention"),
-    (r"\b(fake|misuse|without (a )?licen[cs]e)\b", "contravention improper use standard mark"),
     (r"\bcrs\b", "compulsory registration"),
     (r"\bhuid\b", "hallmark unique identification"),
     (r"\bregistration\b", "registration licence application"),

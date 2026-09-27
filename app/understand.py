@@ -79,12 +79,6 @@ def understand(question: str, history: list[dict] | None = None, profile: dict |
         print(f"[understand] using rules ({type(e).__name__}: {str(e)[:80]})")
     base = _rules(q, profile)
     res = {k: out.get(k) or base[k] for k in base}
-    # clear words in THIS message beat both the model and the remembered profile
-    now = _rules(q, {})
-    if now["intent"] in ("compare", "problem_solving", "check_requirement"):
-        res["intent"] = now["intent"]
-    if now["user_role"] in ("consumer", "importer", "jeweller") and res["user_role"] != now["user_role"]:
-        res["user_role"] = now["user_role"]
     if res["intent"] not in INTENTS:
         res["intent"] = base["intent"]
     if res["user_role"] not in ROLES:

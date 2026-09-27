@@ -75,13 +75,13 @@ def test_greeting_needs_no_llm(fake, monkeypatch):
 
 
 def test_expand_rules():
+    # hand-written boosts/expansions were removed in Task 8 (they were tuned to test questions)
+    assert expand.source_boosts("penalty for fake ISI mark") == [] and expand.expansions("fees") == []
     assert expand.normalize("register under IBS for is1293") == "register under BIS for IS 1293"
     assert expand.detect_scheme("I import toys, what licence?") == "FMCS"
     assert expand.detect_scheme("documents for ISI licence") == "I"
     assert expand.detect_scheme("compare Scheme I and Scheme II") is None
     assert expand.detect_scheme("CRS registration for mobile chargers") == "II"
-    assert "bis_act_2016" in expand.source_boosts("penalty for fake ISI mark")
-    assert len(expand.expansions("documents and fee for licence renewal")) == 3
 
 
 def test_provider_fallback(monkeypatch):
