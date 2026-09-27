@@ -9,3 +9,8 @@ index/
 data/processed/parsed.jsonl
 data/*.out
 eval/results.jsonl
+kb_graph/
+data/processed/
+data/refusals.jsonl
+eval/embedding_map.html
+eval/knowledge_graph.html
