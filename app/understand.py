@@ -24,7 +24,10 @@ Reply with JSON only:
  "standalone_question": "the message rewritten in English as a complete question. For a follow-up, ask ONLY the new
      thing, applied to the known product and scheme (e.g. after LED bulbs: 'and the cost?' -> 'What are the fees for
      CRS registration of LED bulbs?'); do not repeat the earlier question",
- "sub_questions": ["2-4 short English search questions that together cover what the user needs"]}}
+ "sub_questions": ["2-4 short English search questions that together cover what the user needs"],
+ "product_attrs": {{"product_type": "the product in plain English, or ''", "material": "", "use": "domestic | industrial | ''",
+     "electrical": true|false, "electronics_it": true|false, "precious_metal": true|false,
+     "maker_location": "india | foreign | unknown", "role": "manufacturer | importer | trader | jeweller | consumer | unknown"}}}}
 Intent guide: advice = "what should I do / guide me"; process = "how to / steps"; explain = "what is";
 check_requirement = "is it compulsory / do I need"; compare = "difference / vs"; problem_solving = something went
 wrong (objection, rejection, no HUID, fake mark); quick_fact = one number or name.
@@ -68,7 +71,7 @@ def understand(question: str, history: list[dict] | None = None, profile: dict |
               + (f"Earlier conversation:\n{convo}\n" if convo else "") + f"\nMessage: {q}")
     out, provider = {}, "rules"
     try:
-        text, provider = llm.generate_with_provider(prompt, system=SYSTEM, temperature=0.0, max_tokens=500,
+        text, provider = llm.generate_with_provider(prompt, system=SYSTEM, temperature=0.0, max_tokens=1200,
                                                     model=config.GEMINI_ROUTER_MODEL, groq_model=config.GROQ_SMALL_MODEL)
         text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         out = json.loads(text[text.find("{"): text.rfind("}") + 1])
@@ -97,6 +100,8 @@ def understand(question: str, history: list[dict] | None = None, profile: dict |
     terms = set(re.findall(r"\b(ISI|CRS|HUID|FMCS|QCO|IS \d{2,5}|Scheme[- ]?[IVX]+)\b", q, re.I))
     if not followup and any(t.lower() not in res["standalone_question"].lower() for t in terms):
         res["standalone_question"] = q
+    attrs = out.get("product_attrs")
+    res["product_attrs"] = attrs if isinstance(attrs, dict) else {}
     res["language"] = detect_lang(q)
     res["provider"] = provider
     return res

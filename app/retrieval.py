@@ -48,21 +48,25 @@ def _bm25():
 
 @lru_cache(maxsize=1)
 def _qdrant():
+    return open_local_qdrant(config.QDRANT_PATH)
+
+
+def open_local_qdrant(path: str):
+    """Open an embedded Qdrant store; if another process (the chat, the API) holds it, read a snapshot copy."""
     import atexit
 
     from qdrant_client import QdrantClient
 
     try:
-        client = QdrantClient(path=config.QDRANT_PATH)
+        client = QdrantClient(path=path)
     except RuntimeError as e:
         if "already accessed" not in str(e):
             raise
-        # another process (the chat, the API) holds the index: read a snapshot copy instead
         import shutil
         import tempfile
 
         snap = Path(tempfile.mkdtemp(prefix="bis_qdrant_")) / "qdrant"
-        shutil.copytree(config.QDRANT_PATH, snap, ignore=shutil.ignore_patterns(".lock"))
+        shutil.copytree(path, snap, ignore=shutil.ignore_patterns(".lock"))
         print("[retrieval] index is open in another process; using a read-only snapshot copy")
         client = QdrantClient(path=str(snap))
     atexit.register(client.close)  # close cleanly (avoids a noisy warning at interpreter exit)

@@ -42,6 +42,14 @@ class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
 
 
+class RecommendRequest(BaseModel):
+    description: str = Field(..., min_length=1, max_length=2000)
+
+
+class SchemeRequest(BaseModel):
+    profile: dict = Field(default_factory=dict)  # maker_location, role, product, is_electronics_it, is_precious_metal
+
+
 def _remember(session_id: str, message: str, result: dict):
     short = re.split(r"\n\n\*\*(?:Sources|स्रोत):\*\*", result["answer"])[0][:1500]
     HISTORY[session_id].extend([{"role": "user", "content": message},
@@ -57,7 +65,7 @@ def _chat(req: ChatRequest) -> dict:
 @app.get("/")
 def root():
     return {"name": "BIS Assistant API", "docs": "/docs",
-            "endpoints": ["POST /chat", "POST /chat/stream", "POST /search", "GET /health", "GET /sources",
+            "endpoints": ["POST /chat", "POST /chat/stream", "POST /search", "POST /recommend", "POST /scheme", "GET /health", "GET /sources",
                           "POST /admin/reindex"]}
 
 
@@ -85,6 +93,23 @@ async def chat_stream(req: ChatRequest):
         yield {"event": "done", "data": json.dumps({k: result[k] for k in ("provider", "latency_ms", "sources_used",
                                                                             "refused", "cached")})}
     return EventSourceResponse(iterate_in_threadpool(events()))
+
+
+@app.post("/recommend")
+def recommend(req: RecommendRequest):
+    """Standard Recommender: candidate Indian Standards for a product description (JSON for the web UI)."""
+    from app.recommender import recommend_standards
+    return recommend_standards(req.description)
+
+
+@app.post("/scheme")
+def scheme(req: SchemeRequest):
+    """Scheme Selector: which BIS scheme applies, why, next steps and sources, for a profile."""
+    from app.recommender import recommend_standards, select_scheme
+    p = req.profile
+    product = str(p.get("product") or "")
+    rec = recommend_standards(product, attrs={"precious_metal": p.get("is_precious_metal", False)}) if product else {"candidates": []}
+    return {"candidates": rec["candidates"], **select_scheme(p, rec["candidates"], product)}
 
 
 @app.post("/search")

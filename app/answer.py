@@ -67,13 +67,25 @@ CONTEXT_CHARS = 12_000   # ~3,000 tokens: keeps each question well under Groq's 
 EXCERPT_CHARS = 1_500
 
 
-def fit_budget(chunks: list[dict], question: str) -> list[dict]:
+PRODUCT_Q = re.compile(r"which (indian )?standard|which IS (no|number)|is (it |bis |isi )?(certification )?(compulsory|mandatory)|"
+                       r"do i need|which scheme|want to (make|manufacture|import|sell|start)|\b(make|making|manufactur\w*|"
+                       r"import\w*|sell\w*)\b.*\b(in india|bis|isi|crs)|made in|imported from|\bIS \d{2,5}\b", re.I)
+
+
+def is_product_question(q: str, u: dict) -> bool:
+    """'Which standard / is it compulsory / which scheme / I want to make, import or sell X' questions."""
+    if PRODUCT_Q.search(q):
+        return True
+    return u.get("intent") in ("check_requirement", "advice") and bool((u.get("product_attrs") or {}).get("product_type"))
+
+
+def fit_budget(chunks: list[dict], question: str, budget: int = CONTEXT_CHARS) -> list[dict]:
     """Keep excerpts in rank order until the context budget is used; long excerpts are cut to the
     part most similar to the question (best_window)."""
     out, used = [], 0
     for c in chunks:
         text = c["text"] if len(c["text"]) <= EXCERPT_CHARS else best_window(question, c["text"], EXCERPT_CHARS)
-        if out and used + len(text) > CONTEXT_CHARS:
+        if out and used + len(text) > budget:
             break
         out.append({**c, "text": text})
         used += len(text)
@@ -435,9 +447,27 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         return hit
 
     ret = retrieve(search_q, extra_queries=u["sub_questions"], intent=u["intent"])
-    chunks = fit_budget(ret["chunks"], search_q)
+    tools_block, tool_trace = "", None
+    if is_product_question(q, u):
+        # Standard Recommender + Scheme Selector: their evidence (product rows, rule proofs) comes first in the context
+        from app.recommender import recommend_standards, select_scheme, tool_context
+        t_tools = time.time()
+        desc = f"{u['product_or_topic']} ({q})" if u.get("product_or_topic") else q
+        rec = recommend_standards(desc, attrs=u.get("product_attrs") or {})
+        sch = select_scheme({"role": u.get("user_role") if u.get("user_role") in ("importer", "jeweller") else "unknown"},
+                            rec["candidates"], f"{q} {search_q}")
+        tool_chunks, tools_block = tool_context(rec, sch)
+        have = {c["chunk_id"] for c in tool_chunks}
+        chunks = tool_chunks + fit_budget([c for c in ret["chunks"] if c["chunk_id"] not in have], search_q,
+                                          budget=CONTEXT_CHARS // 2)
+        tool_trace = {"candidates": [f"{c['is_number']} | {c['product_name'][:40]} | {c['compulsory']} | {c['scheme']}"
+                                     for c in rec["candidates"]],
+                      "schemes": [r["key"] for r in sch["results"]], "notes": len(sch["notes"]),
+                      "profile": sch["profile"], "ms": int((time.time() - t_tools) * 1000)}
+    else:
+        chunks = fit_budget(ret["chunks"], search_q)
     trace = {"understand": {**u, "ms": int((time.time() - t_u) * 1000) - ret["trace"]["ms"]},
-             "retrieval": ret["trace"],
+             "retrieval": ret["trace"], "tools": tool_trace,
              "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"], "section": c.get("section", "")[:80],
                          "scheme": c.get("scheme"), "page": c.get("page"), "rerank": c.get("rerank"),
                          "neighbour_of": c.get("neighbour_of")} for n, c in enumerate(chunks, start=1)]}
@@ -449,7 +479,8 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
               f"USER: role = {u['user_role']}; goal = {u['user_goal'] or 'not stated'}; "
               f"product/topic = {u['product_or_topic'] or 'not stated'}\n"
               f"INTENT: {u['intent']}\n"
-              f"QUESTION ({'Hindi' if lang == 'hi' else 'English'}): {q}"
+              + (f"\n{tools_block}\nANSWER LAYOUT: product\n\n" if tools_block else "")
+              + f"QUESTION ({'Hindi' if lang == 'hi' else 'English'}): {q}"
               + (f"\n(Meaning, with the earlier conversation: {search_q})" if search_q.lower() != q.lower() else ""))
     t_gen = time.time()
     raw, provider = llm.generate_with_provider(prompt, system=prompts.ANSWER, temperature=0.1, max_tokens=4096)
