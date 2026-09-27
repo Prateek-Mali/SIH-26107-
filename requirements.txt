@@ -21,3 +21,7 @@ langchain-community<0.4   # ragas 0.4 imports a module removed in langchain-comm
 langchain-google-genai>=2.0
 pytest>=8.0
 fastembed>=0.4   # local ONNX reranker (no PyTorch needed on Intel Macs)
+umap-learn>=0.5          # embedding map
+llvmlite<0.44            # last versions with Intel-mac wheels (umap -> numba)
+numba<0.61
+pyvis>=0.3               # knowledge graph
