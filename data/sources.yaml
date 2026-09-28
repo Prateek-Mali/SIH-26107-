@@ -1,0 +1,545 @@
+# BIS Assistant: list of sources to download
+# scripts/download.py reads this file and downloads everything automatically.
+# Every source is an official BIS or Government of India page. All were checked on 26 Sep 2026.
+#
+# type:     pdf  = download the file
+#           html = save the page text
+#           table_scrape = read the table on the page into a CSV and download every PDF linked in it
+# agent:    which agent's knowledge this belongs to (law | certification | product_qco | hallmarking_consumer)
+# priority: 1 = must have for the first demo, 2 = add next
+
+download_rules:
+  user_agent: "BIS-Assistant-Student-Project/0.1 (educational, SIH26107)"
+  delay_seconds: 2            # wait between requests; never hammer government servers
+  respect_robots_txt: true
+  retries: 3
+  skip_if_exists: true        # keep a local cache; do not re-download
+  never:
+    - bypass CAPTCHA or login pages
+    - download paid ISO/IEC-adopted standards
+    - republish full standard text (cite and link instead: BIS copyright)
+  on_failure: "log to data/download_log.csv and continue; do not stop the whole run"
+
+sources:
+
+  # ───────────── 1. LAW: Act, Rules, Regulations ─────────────
+  - id: bis_act_2016
+    title: Bureau of Indian Standards Act, 2016
+    url: https://www.bis.gov.in/wp-content/uploads/2020/12/BIS-Act-2016.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: bis_act_2016_indiacode
+    title: BIS Act, 2016 (India Code copy, fallback)
+    url: https://www.indiacode.nic.in/bitstream/123456789/2157/3/A2016-11.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: bis_act_removal_of_difficulty_2019
+    title: BIS Act 2016 with Removal of Difficulty Order, 2019
+    url: https://www.bis.gov.in/wp-content/uploads/2019/09/BIS_ROD_Order_12092019.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: bis_act_enforcement
+    title: Enforcement of BIS Act, 2016
+    url: https://www.bis.gov.in/PDF/bs/Act_Enforcement.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: bis_rules_2018
+    title: BIS Rules, 2018 (with all amendments)
+    url: https://www.bis.gov.in/wp-content/uploads/2020/10/BIS-Rules-2018_amendments_Sep_15102020.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: ca_regulations_2018
+    title: BIS (Conformity Assessment) Regulations, 2018
+    url: https://www.bis.gov.in/wp-content/uploads/2019/03/BIS_CA_12032019.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: ca_amdt_2020
+    title: CA Amendment Regulations, 2020
+    url: https://www.bis.gov.in/wp-content/uploads/2020/07/BIS_CA_Amendment_Regulations_2020.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_1
+    title: CA First Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/02/BS_1_08022021.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_2
+    title: CA Second Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/02/BS_08022021.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_3
+    title: CA Third Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/07/BIS_CA_Third_Amendment_Regulations_2021_Gazette.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_4
+    title: CA Fourth Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/08/BIS-CA-4th-Amendment-Regulations-2021-Gazette.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_5
+    title: CA Fifth Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/12/BIS-CA-5th-Amdt-Regulations-2021-Gazette.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2021_6
+    title: CA Sixth Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/12/BIS-CA-6th-Amendment-Regulations-2021-Gazette.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2022
+    title: CA Amendment Regulations, 2022 (Scheme X)
+    url: https://www.bis.gov.in/wp-content/uploads/2022/03/Scheme-10.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2023
+    title: CA Amendment Regulations, 2023
+    url: https://www.bis.gov.in/wp-content/uploads/2023/06/Gazette-21.06.23-Printed-Final.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2024_mar
+    title: CA Amendment Regulations, March 2024
+    url: https://www.bis.gov.in/wp-content/uploads/2024/03/BIS-CA-Regulations-Amendment-06March2024.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2024_sep
+    title: CA Regulations amendment, Sep 2024
+    url: https://www.bis.gov.in/wp-content/uploads/2024/09/Gazette-Notification-Published-amendment-to-regulation-conformity-assesment.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: ca_amdt_2026
+    title: CA Amendment Regulations, 2026
+    url: https://www.bis.gov.in/wp-content/uploads/2026/03/Gazette-Notification-1.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: ca_amdt_2026_corrigendum
+    title: Corrigendum to CA Amendment, 2026
+    url: https://www.bis.gov.in/wp-content/uploads/2026/05/Gazette-Notification-28.04.26.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: advisory_committees_regs
+    title: BIS Advisory Committees Regulations, 2018 (amended to June 2020)
+    url: https://www.bis.gov.in/wp-content/uploads/2020/07/BIS-Advisory-Committees-Regulations-2018-incorp.-Amendments-up-to-June-2020.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: dg_powers_regs
+    title: BIS Powers and Duties of Director General Regulations, 2018
+    url: https://www.bis.gov.in/PDF/bs/BIS(Powers&Duties)Regulations_05092018.pdf
+    type: pdf
+    agent: law
+    priority: 2
+  - id: marking_requirements
+    title: Marking requirement as per BIS (CA) Regulations
+    url: https://www.crsbis.in/BIS/app_srv/tdc/gl/docs/Marking%20requirement%20as%20per%20BIS%20(Conformity%20Assessment)%20Regulations.pdf
+    type: pdf
+    agent: law
+    priority: 1
+  - id: law_page
+    title: BIS Act, Rules & Regulations index page
+    url: https://www.bis.gov.in/the-bureau/bis-act-rules-and-regulations/?lang=en
+    type: html
+    agent: law
+    priority: 1
+
+  # ───────────── 2. CERTIFICATION: schemes, process, fees, FMCS ─────────────
+  - id: cert_overview
+    title: Product Certification Overview
+    url: https://www.bis.gov.in/product-certification/product-certification-overview/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: cert_process
+    title: Product Certification Process
+    url: https://www.bis.gov.in/product-certification/product-certification-process/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: cert_fee
+    title: Product Certification Fee
+    url: https://www.bis.gov.in/product-certification/product-certification-fee/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: cert_faq
+    title: Product Certification FAQ
+    url: https://www.bis.gov.in/product-certification/product-certification-faq/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: cert_apply_online
+    title: Apply Online
+    url: https://www.bis.gov.in/product-certification/product-certificatin-apply-online/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: simplified_procedure_list
+    title: List of Products under Simplified Procedure
+    url: https://www.bis.gov.in/wp-content/uploads/2024/11/List-of-Products-Under-Simplified-Procedure.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: scheme_x_process
+    title: Scheme-X Certification Process
+    url: https://www.bis.gov.in/certification-process-4/
+    type: html
+    agent: certification
+    priority: 2
+  - id: fmcs_overview
+    title: FMCS (Foreign Manufacturers) Overview
+    url: https://www.bis.gov.in/fmcs/fmcs-overview/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: fmcs_how_to_apply
+    title: FMCS How to Apply
+    url: https://www.bis.gov.in/fmcs/certification-process/how-to-apply/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: fmcs_fee
+    title: FMCS Fee
+    url: https://www.bis.gov.in/fmcs/fmcs-fee/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: fmcs_faq
+    title: FMCS FAQs
+    url: https://www.bis.gov.in/fmcs/fmcs-faqs/?lang=en
+    type: html
+    agent: certification
+    priority: 1
+  - id: crs_order_2021
+    title: Electronics & IT Goods (Requirement of Compulsory Registration) Order, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/11/Electronics-and-Information-Technology-Goods-Requirement-of-Compulsory-Registration-Order-2021-1.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: crs_amdt_mar_2026
+    title: CRS Order amendment S.O.1246(E), 10 Mar 2026
+    url: https://www.bis.gov.in/wp-content/uploads/2026/05/amendments-to-the-Electronics-and-Information-Technology-Goods-Requirements-for-Compulsory-Registration-2021-1.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: crs_amdt_may_2026_hdd
+    title: CRS Order amendment S.O.2204(E), 5 May 2026 (Hard Disk Drives)
+    url: https://www.bis.gov.in/wp-content/uploads/2026/05/Electronics-and-Information-Technology-Goods-2021-Amendment-Standalone-Hard-Disk-Drives-1.pdf
+    type: pdf
+    agent: certification
+    priority: 2
+  - id: crs_cctv_requirements
+    title: CCTV Essential Requirements S.O.1652(E), Apr 2024
+    url: https://www.bis.gov.in/wp-content/uploads/2024/04/CCTV-Camera-CRO-2021.pdf
+    type: pdf
+    agent: certification
+    priority: 2
+  - id: crs_standard_mark_guidelines
+    title: CRS Standard Mark Guidelines
+    url: https://www.crsbis.in/BIS/app_srv/tdc/BISDesign/docs/StandardMarkGuidelines.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: lab_recognition_scheme
+    title: Lab Recognition Scheme 2020
+    url: https://www.bis.gov.in/wp-content/uploads/2020/06/LRS_23062020.pdf
+    type: pdf
+    agent: certification
+    priority: 2
+
+  # ───────────── 3. PRODUCTS & QCOs: which product needs which standard ─────────────
+  - id: scheme1_products_table
+    title: "Scheme I (ISI mark): products under compulsory certification"
+    url: https://www.bis.gov.in/product-certification/products-under-compulsory-certification/scheme-1/?lang=en
+    type: table_scrape      # columns: s_no, is_number, product, qco_title, qco_pdf_url; also download every QCO PDF
+    output_csv: data/structured/products_scheme1.csv
+    agent: product_qco
+    priority: 1
+  - id: scheme2_page
+    title: Scheme II (CRS registration) page
+    url: https://www.bis.gov.in/product-certification/products-under-compulsory-certification/scheme-ii-registration-scheme/?lang=en
+    type: table_scrape
+    output_csv: data/structured/products_scheme2.csv
+    agent: product_qco
+    priority: 1
+  - id: scheme4_page
+    title: Scheme IV (Certificate of Conformity) products
+    url: https://www.bis.gov.in/product-certification/products-under-compulsory-certification/scheme-4/?lang=en
+    type: table_scrape
+    output_csv: data/structured/products_scheme4.csv
+    agent: product_qco
+    priority: 2
+  - id: schemeX_page
+    title: Scheme X products
+    url: https://www.bis.gov.in/products-under-compulsory-certification-scheme-x/?lang=en
+    type: table_scrape
+    output_csv: data/structured/products_schemeX.csv
+    agent: product_qco
+    priority: 2
+  - id: fmcs_products
+    title: Products under FMCS
+    url: https://www.bis.gov.in/fmcs/certification-process/products-under-fmcs/?lang=en
+    type: table_scrape
+    output_csv: data/structured/products_fmcs.csv
+    agent: product_qco
+    priority: 2
+  - id: upcoming_qcos
+    title: Upcoming QCOs notified and due for implementation
+    url: https://www.bis.gov.in/upcoming-qcos-notified-and-due-for-implementation/?lang=en
+    type: table_scrape
+    output_csv: data/structured/upcoming_qcos.csv
+    agent: product_qco
+    priority: 1
+  - id: qco_guidance
+    title: Guidance Document on Quality Control Orders
+    url: https://www.bis.gov.in/wp-content/uploads/2021/07/Guidance-document-on-QCOs-Revised-1.pdf
+    type: pdf
+    agent: product_qco
+    priority: 1
+  - id: product_specific_info
+    title: Product-specific information
+    url: https://www.bis.gov.in/product-certification/product-specific-information-2/?lang=en
+    type: html
+    agent: product_qco
+    priority: 2
+  - id: pib_qco_2025
+    title: "PIB release: 187 QCOs covering 769 products (Mar 2025)"
+    url: https://www.pib.gov.in/PressReleasePage.aspx?PRID=2110935
+    type: html
+    agent: product_qco
+    priority: 2
+
+  # ───────────── 4. HALLMARKING & CONSUMER ─────────────
+  - id: hm_regulations_2018
+    title: BIS (Hallmarking) Regulations, 2018 (incl. Amdt 1)
+    url: https://www.bis.gov.in/wp-content/uploads/2019/02/BIS-Hallmarking-Regulations-2018-Incorp.-Amdt-1.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_regs_amdt_2021
+    title: Hallmarking Amendment Regulations, 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2022/03/BIS-HM-Amdt-Regulations-2021-Gazette.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_regs_amdt_2022
+    title: Hallmarking Amendment Regulations, 2022
+    url: https://www.bis.gov.in/wp-content/uploads/2022/03/BIS-HM-Amendment-Regulations-2022-1.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_regs_amdt_2026
+    title: Hallmarking Amendment Regulations, 2026
+    url: https://www.bis.gov.in/wp-content/uploads/2026/09/Gazette-Notification-of-Hallmarking-Published.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_order_2020
+    title: Hallmarking of Gold Jewellery and Gold Artefacts Order, 2020
+    url: https://www.bis.gov.in/wp-content/uploads/2020/01/Mandatory-Hallmarking-Order-15.01.2020.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_order_amdt_2020
+    title: Hallmarking Order Amendment, 2020
+    url: https://www.bis.gov.in/wp-content/uploads/2020/10/Hallmarking-of-Gold-Jewellery-and-Gold-Artefacts-Amendment-Order-2020.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_order_june_2021
+    title: Hallmarking Order, June 2021
+    url: https://www.bis.gov.in/wp-content/uploads/2021/06/qc-order-June-2021-2.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_order_amdt_2022
+    title: Hallmarking Order Amendment, 2022
+    url: https://www.bis.gov.in/wp-content/uploads/2022/04/Hallmarking-of-Gold-Jewellery-and-Gold-Artefacts-Amendment-Order-2022.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_doca_notification
+    title: DoCA notification on precious metal articles
+    url: https://www.bis.gov.in/PDF/bs/DoCA_BIS_Hallmarking_Regulations_2018_Gazette_notification.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_overview
+    title: Hallmarking overview
+    url: https://www.bis.gov.in/hallmarking-overview/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_mandatory_order_page
+    title: Mandatory Hallmarking Order page
+    url: https://www.bis.gov.in/hallmarking-overview/mandatory-hallmarking-order/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_faq_general
+    title: Hallmarking FAQ (general)
+    url: https://www.bis.gov.in/hallmarking-overview/hallmarking-faqs/hallmarking-faq/?lang=en
+    type: html
+    follow_links_same_section: true   # also save the other hallmarking FAQ sub-pages
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_jewellers_guidelines
+    title: Guidelines for Jewellers (Jul 2026)
+    url: https://www.bis.gov.in/wp-content/uploads/2026/07/Guidelines-for-Jewellers.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 1
+  - id: hm_ahc_guidelines
+    title: Guidelines for AHCs (Jul 2026)
+    url: https://www.bis.gov.in/wp-content/uploads/2026/07/GuidelinesForAHCs.pdf
+    type: pdf
+    agent: hallmarking_consumer
+    priority: 2
+  - id: hm_marking_fee
+    title: Hallmarking marking fee
+    url: https://www.bis.gov.in/index.php/hallmarking-overview/gold-refinery/marking-fee/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 2
+  - id: consumer_complaint
+    title: Online complaint registration
+    url: https://www.bis.gov.in/consumer-overview/online-complaint-registration/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 1
+  - id: consumer_protection
+    title: Consumer protection
+    url: https://www.bis.gov.in/consumer-overview/consumer-protection/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 1
+  - id: bis_care_app_page
+    title: BIS apps (BIS CARE)
+    url: https://www.bis.gov.in/bis-apps/?lang=en
+    type: html
+    agent: hallmarking_consumer
+    priority: 1
+
+  # ───────────── Added in Task 2 (application checklist, operating manual) ─────────────
+  - id: application_checklist
+    title: Check-list for application to be submitted by applicant to BIS
+    url: https://www.bis.gov.in/wp-content/uploads/2018/11/Checklist_for_Application.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: operating_manual_product_cert
+    title: Operating Manual for Product Certification (older, pre-2018 procedure)
+    url: https://bis.gov.in/PDF/pdf/rti/operating_manual.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+    note: "Older document. If it conflicts with the CA Regulations 2018 and their amendments, the Regulations win."
+
+  # Official procedure guidelines linked from the Product Certification Process page
+  - id: guide_grant_of_licence
+    title: "Guidelines for Grant of Licence (Scheme I, 25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/GrantofLicence-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_additional_scheme1
+    title: "Additional Guidelines for Scheme-I (DG Order No. 3 of 2020)"
+    url: https://www.bis.gov.in/wp-content/uploads/2020/09/BIS-DGO-No.3ofYear2020.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_non_conformity
+    title: "Guidelines for Dealing with Product Non-Conformity (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/Dealing-WithNon-Conformity-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_unsatisfactory_performance
+    title: "Guidelines for Dealing with Unsatisfactory Performance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/Dealing-With-Unsatisfactory-Performance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_change_in_scope
+    title: "Guidelines for Change in Scope of Licence"
+    url: https://www.bis.gov.in/wp-content/uploads/2021/05/Website-GuidelinesForChangeInScopeOfLicence_may.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_renewal
+    title: "Guidelines for Renewal of Licence"
+    url: https://www.bis.gov.in/wp-content/uploads/2025/03/RenewalGuidelines-WebsiteHosting.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_retesting
+    title: "Guidelines for Sample Coding and Retesting of Samples"
+    url: https://www.bis.gov.in/wp-content/uploads/2025/07/Guidelines-Samples-Coding-Retesting.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_factory_surveillance
+    title: "Guidelines for Factory Surveillance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/FactorySurveillance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_market_surveillance
+    title: "Guidelines for Market Surveillance (25 Feb 2026)"
+    url: https://www.bis.gov.in/wp-content/uploads/2026/02/MarketSurveillance-Guidelines-25Feb2026.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_cbtf_msme
+    title: "Guidelines for utilisation of Cluster Based Test Facility (CBTF) by MSMEs"
+    url: https://www.bis.gov.in/wp-content/uploads/2023/07/GuidelinesForUtilisationOfClusterLabByMSMEs.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_grant_coc
+    title: "Guidelines for Grant of Certificate of Conformity (Scheme IV)"
+    url: https://www.bis.gov.in/wp-content/uploads/2021/03/Grant-of-CoC-Guidelines.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_renewal_coc
+    title: "Guidelines for Renewal of Certificate of Conformity (Scheme IV)"
+    url: https://www.bis.gov.in/wp-content/uploads/2022/01/Guidelines-RenewalOf-CoC.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+  - id: guide_coc_surveillance
+    title: "Guidelines for Surveillance under Scheme IV (Stampings/Laminations/Core of Transformers)"
+    url: https://www.bis.gov.in/wp-content/uploads/2024/07/CoC-Surveillance-Guidelines-BIS-Website.pdf
+    type: pdf
+    agent: certification
+    priority: 1
+
+# ───────────── Links the bot SHOWS but never downloads (login / CAPTCHA / live tools) ─────────────
+official_links:
+  verify_licence_huid_crs: "BIS CARE app — https://play.google.com/store/apps/details?id=com.bis.bisapp"
+  know_your_standard: https://www.bis.gov.in/know-your-standard/?lang=en
+  free_standards_download: https://standardsbis.bsbedge.com/
+  manak_online: https://www.manakonline.in/
+  crs_portal: https://www.crsbis.in/BIS/registration-page.do
+  lab_search_by_is: https://lims.bis.gov.in/home/search_is_number/
+  complaint: https://www.bis.gov.in/consumer-overview/online-complaint-registration/?lang=en
