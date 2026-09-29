@@ -82,15 +82,17 @@ Documents that could not be downloaded (BIS server returns 403) are listed in `d
 
 ## Run
 
+Web chat (the UI in `ui/web/`): start the server, then open http://localhost:8000
+```bash
+.venv/bin/uvicorn app.api:app --port 8000
+```
+
 Terminal chat (`/trace` shows how it answered):
 ```bash
 .venv/bin/python ui/chat_cli.py
 ```
 
-API server:
-```bash
-.venv/bin/uvicorn app.api:app --port 8000
-```
+The same server is the API (`/docs`, `/api`):
 
 | Endpoint | What it does |
 |---|---|

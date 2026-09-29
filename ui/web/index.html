@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIS Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F6F4EF;--line:#E4E0D6;--line2:#D9D4C8;--ink:#1A1A17;--muted:#5E5B53;--faint:#8A867C;--green:#1F4D3A;--green-dark:#163828;--green-soft:#E3ECE6;--hover:#EDEAE2;--card:#FFFFFF}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--green);text-decoration:none}a:hover{color:var(--green-dark)}
+*{box-sizing:border-box}
+.page{min-height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;justify-content:space-between;padding:20px clamp(20px,5vw,64px);gap:16px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink)}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--green);display:grid;place-items:center;color:var(--bg);font-family:'Instrument Serif',serif;font-size:20px;line-height:1}
+.brand span{font-weight:600;font-size:17px;letter-spacing:-.01em}
+.navbtn{height:44px;padding:0 18px;display:flex;align-items:center;border-radius:999px;border:1px solid var(--line2);color:var(--ink);font-weight:500;font-size:15px}
+.navbtn:hover{background:var(--hover);color:var(--ink)}
+main{flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:clamp(32px,6vw,80px);align-items:center;padding:clamp(24px,6vw,72px) clamp(20px,5vw,64px);max-width:1280px;width:100%;margin:0 auto}
+.hero{display:flex;flex-direction:column;gap:28px}
+.pill{display:inline-flex;align-self:flex-start;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--green-soft);color:var(--green);font-size:13px;font-weight:500}
+.pill i{width:6px;height:6px;border-radius:50%;background:var(--green)}
+h1{margin:0;font-family:'Instrument Serif',serif;font-weight:400;font-size:clamp(48px,7vw,88px);line-height:.98;letter-spacing:-.02em;text-wrap:balance}
+h1 em{color:var(--green)}
+.lead{margin:0;font-size:18px;line-height:1.55;color:var(--muted);max-width:34ch;text-wrap:pretty}
+.cta-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.cta{height:52px;padding:0 26px;display:flex;align-items:center;gap:10px;border-radius:999px;background:var(--green);color:var(--bg);font-weight:500;font-size:16px}
+.cta:hover{background:var(--green-dark);color:var(--bg)}
+.note{font-size:14px;color:var(--muted)}
+.preview{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:24px;display:flex;flex-direction:column;gap:14px;box-shadow:0 30px 60px -30px rgba(40,35,20,.18)}
+.ph{display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid #EFEBE3}
+.ph b{font-size:14px;font-weight:500}.ph span{font-size:12px;color:var(--muted)}
+.u{align-self:flex-end;max-width:80%;background:var(--green);color:var(--bg);padding:12px 16px;border-radius:18px 18px 4px 18px;font-size:15px;line-height:1.5}
+.b{display:flex;gap:10px;align-items:flex-start;max-width:90%}
+.av{flex:none;width:28px;height:28px;border-radius:8px;background:var(--green-soft);color:var(--green);display:grid;place-items:center;font-family:'Instrument Serif',serif;font-size:18px}
+.b div:last-child{font-size:15px;line-height:1.55}
+.ask{margin-top:6px;display:flex;align-items:center;gap:10px;height:48px;padding:0 8px 0 16px;border:1px solid var(--line);border-radius:14px;color:var(--faint);font-size:15px}
+.ask span{flex:1}.ask div{width:34px;height:34px;border-radius:10px;background:var(--green);color:var(--bg);display:grid;place-items:center}
+.ask:hover{border-color:var(--green)}
+.features{max-width:1280px;width:100%;margin:0 auto;padding:0 clamp(20px,5vw,64px) 64px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:20px;align-items:stretch}
+.f{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px;display:flex;flex-direction:column;gap:12px}
+.f .num{width:36px;height:36px;border-radius:10px;background:var(--green-soft);color:var(--green);display:grid;place-items:center;font-size:14px;font-weight:600}
+.f .h{font-family:'Instrument Serif',serif;font-size:28px;line-height:1.1;margin-top:8px}
+.f .d{font-size:15px;line-height:1.55;color:var(--muted);text-wrap:pretty}
+footer{padding:20px clamp(20px,5vw,64px);border-top:1px solid var(--line);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <a class="brand" href="./"><div class="logo">B</div><span>BIS Assistant</span></a>
+    <nav><a class="navbtn" href="chat.html">Open chat</a></nav>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="pill"><i></i>Answers from official BIS documents</div>
+      <h1>Know your standard before you <em>build.</em></h1>
+      <p class="lead">Ask about Indian Standards, ISI and CRS certification, QCOs and hallmarking. Every answer is cited to official BIS documents.</p>
+      <div class="cta-row"><a class="cta" href="chat.html">Start asking <span aria-hidden="true">→</span></a><span class="note">Free to use · No sign-in · English or हिन्दी</span></div>
+    </section>
+    <section class="preview" aria-label="Preview">
+      <div class="ph"><b>Steel water bottles</b><span>Today</span></div>
+      <div class="u">I make stainless-steel water bottles. Which standard applies?</div>
+      <div class="b"><div class="av">B</div><div>IS 17803:2022 applies, and BIS certification is compulsory under the Potable Water Bottles QCO. You'll need an ISI licence (Scheme I). [1]</div></div>
+      <div class="u">Great. What documents do I need?</div>
+      <a class="ask" href="chat.html?q=I%20make%20stainless-steel%20water%20bottles.%20Which%20standard%20applies%3F"><span>Ask BIS Assistant…</span><div>↑</div></a>
+    </section>
+  </main>
+  <section class="features">
+    <div class="f"><span class="num">01</span><span class="h">Answers with proof</span><span class="d">Every fact links to the official BIS document and page it came from.</span></div>
+    <div class="f"><span class="num">02</span><span class="h">Finds your standard</span><span class="d">Describe your product; get the IS number, whether it's compulsory, and the scheme.</span></div>
+    <div class="f"><span class="num">03</span><span class="h">Remembers the conversation</span><span class="d">Ask follow-ups naturally; it keeps your product and context.</span></div>
+  </section>
+  <footer><span>© 2026 BIS Assistant · Built for SIH26107</span><span>Not an official BIS service</span></footer>
+</div>
+</body>
+</html>

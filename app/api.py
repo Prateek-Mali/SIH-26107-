@@ -16,6 +16,8 @@ import threading
 import time
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -53,6 +55,12 @@ def _chat(req: ChatRequest) -> dict:
     return memory.chat(req.message, req.session_id or None)  # local SQLite memory (app/memory.py)
 
 
+@app.get("/sessions")
+def list_sessions():
+    from app import memory
+    return memory.sessions(50)
+
+
 @app.get("/session/{session_id}")
 def get_session(session_id: str):
     from app import memory
@@ -66,10 +74,18 @@ def delete_session(session_id: str):
     return {"deleted": session_id}
 
 
+app.mount("/app", StaticFiles(directory=config.ROOT / "ui" / "web", html=True), name="web")  # the web chat UI
+
+
 @app.get("/")
 def root():
-    return {"name": "BIS Assistant API", "docs": "/docs",
-            "endpoints": ["GET /session/{id}", "DELETE /session/{id}", "POST /chat", "POST /chat/stream", "POST /search", "POST /recommend", "POST /scheme", "GET /health", "GET /sources",
+    return RedirectResponse("/app/")
+
+
+@app.get("/api")
+def api_index():
+    return {"name": "BIS Assistant API", "docs": "/docs", "ui": "/app/",
+            "endpoints": ["GET /sessions", "GET /session/{id}", "DELETE /session/{id}", "POST /chat", "POST /chat/stream", "POST /search", "POST /recommend", "POST /scheme", "GET /health", "GET /sources",
                           "POST /admin/reindex"]}
 
 
