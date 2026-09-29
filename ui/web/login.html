@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · BIS Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F6F4EF;--line:#E4E0D6;--line2:#D9D4C8;--ink:#1A1A17;--muted:#5E5B53;--faint:#8A867C;--green:#1F4D3A;--green-dark:#163828;--green-soft:#E3ECE6;--hover:#EDEAE2;--card:#FFFFFF}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--green);text-decoration:none}a:hover{color:var(--green-dark)}
+*{box-sizing:border-box}
+.page{min-height:100vh;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
+.left{display:flex;flex-direction:column;padding:24px clamp(20px,5vw,64px)}
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink);align-self:flex-start}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--green);display:grid;place-items:center;color:var(--bg);font-family:'Instrument Serif',serif;font-size:20px;line-height:1}
+.brand span{font-weight:600;font-size:17px}
+.center{flex:1;display:flex;align-items:center;justify-content:center;padding:48px 0}
+form{width:100%;max-width:380px;display:flex;flex-direction:column;gap:20px}
+h1{margin:0;font-family:'Instrument Serif',serif;font-weight:400;font-size:44px;line-height:1.05;letter-spacing:-.01em}
+.sub{margin:8px 0 0;font-size:15px;color:var(--muted);line-height:1.5}
+label{display:flex;flex-direction:column;gap:6px}
+label>span{font-size:14px;font-weight:500}
+input{height:48px;padding:0 14px;border-radius:12px;border:1px solid var(--line2);background:var(--card);font:inherit;font-size:15px;color:var(--ink);outline:none;width:100%}
+input:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.pw{position:relative;display:flex}.pw input{padding-right:64px}
+.show{position:absolute;right:4px;top:4px;height:40px;padding:0 12px;border:0;background:transparent;border-radius:8px;font:inherit;font-size:13px;color:var(--muted);cursor:pointer}
+.show:hover{background:var(--hover)}
+.err{padding:12px 14px;border-radius:12px;background:#FBEAE5;color:#8A2A12;font-size:14px;line-height:1.4;display:none}
+.submit{height:52px;border:0;border-radius:999px;background:var(--green);color:var(--bg);font:inherit;font-size:16px;font-weight:500;cursor:pointer}
+.submit:hover{background:var(--green-dark)}.submit:disabled{opacity:.6;cursor:default}
+.switch{margin:0;text-align:center;font-size:14px;color:var(--muted)}
+aside{background:var(--green);color:var(--bg);padding:clamp(32px,6vw,72px);display:flex;flex-direction:column;justify-content:flex-end;gap:28px;min-height:320px}
+aside p{margin:0;font-family:'Instrument Serif',serif;font-size:clamp(32px,3.6vw,48px);line-height:1.1;letter-spacing:-.01em;max-width:18ch;text-wrap:balance}
+.chat{display:flex;flex-direction:column;gap:10px;max-width:360px}
+.q{align-self:flex-end;background:var(--bg);color:var(--ink);padding:10px 14px;border-radius:16px 16px 4px 16px;font-size:14px}
+.a{align-self:flex-start;background:#2A6049;padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:14px;line-height:1.45}
+</style>
+</head>
+<body>
+<div class="page">
+  <section class="left">
+    <a class="brand" href="./"><div class="logo">B</div><span>BIS Assistant</span></a>
+    <div class="center">
+      <form id="form" novalidate>
+        <div><h1 id="h">Welcome back</h1><p class="sub" id="sub">Sign in to continue your conversations.</p></div>
+        <label><span>Email</span><input id="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
+        <label><span>Password</span>
+          <div class="pw"><input id="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required>
+          <button class="show" id="show" type="button">Show</button></div></label>
+        <div class="err" id="err" role="alert"></div>
+        <button class="submit" id="submit" type="submit">Sign in</button>
+        <p class="switch" id="switch">New here? <a href="#" id="toggle">Create an account</a></p>
+      </form>
+    </div>
+  </section>
+  <aside>
+    <p>“Know your standard before you build.”</p>
+    <div class="chat"><div class="q">I make steel water bottles. Which standard?</div>
+      <div class="a">IS 17803:2022, and certification is compulsory under the Potable Water Bottles QCO (Scheme I). [1]</div></div>
+  </aside>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let mode = new URLSearchParams(location.search).get('mode') === 'signup' ? 'signup' : 'login';
+const next = () => { const n = new URLSearchParams(location.search).get('next') || 'chat.html'; return /^[\w.?=&%-]+$/.test(n) ? n : 'chat.html'; };
+
+function setMode(m) {
+  mode = m;
+  const up = m === 'signup';
+  $('h').textContent = up ? 'Create your account' : 'Welcome back';
+  $('sub').textContent = up ? 'Free. Only your email is stored; your conversations stay private to you.' : 'Sign in to continue your conversations.';
+  $('submit').textContent = up ? 'Create account' : 'Sign in';
+  $('password').autocomplete = up ? 'new-password' : 'current-password';
+  $('switch').innerHTML = up ? 'Already have an account? <a href="#" id="toggle">Sign in</a>' : 'New here? <a href="#" id="toggle">Create an account</a>';
+  $('toggle').onclick = e => { e.preventDefault(); setMode(up ? 'login' : 'signup'); };
+  showErr('');
+}
+function showErr(msg) { $('err').textContent = msg; $('err').style.display = msg ? 'block' : 'none'; }
+
+$('show').onclick = () => { const p = $('password'); p.type = p.type === 'password' ? 'text' : 'password'; $('show').textContent = p.type === 'password' ? 'Show' : 'Hide'; };
+$('form').onsubmit = async e => {
+  e.preventDefault();
+  const email = $('email').value.trim(), password = $('password').value;
+  if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(email)) return showErr('Enter a valid email address.');
+  if (password.length < 8) return showErr('The password must be at least 8 characters.');
+  $('submit').disabled = true; showErr('');
+  try {
+    const r = await fetch('/auth/' + (mode === 'signup' ? 'signup' : 'login'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                                              body: JSON.stringify({email, password})});
+    if (r.ok) { location.replace(next()); return; }
+    const d = await r.json().catch(() => ({}));
+    showErr(typeof d.detail === 'string' ? d.detail : 'Something went wrong. Try again.');
+  } catch (err) { showErr("Couldn't reach the server. Check that it is running."); }
+  $('submit').disabled = false;
+};
+fetch('/auth/me').then(r => { if (r.ok) location.replace(next()); }).catch(() => {});
+setMode(mode);
+</script>
+</body>
+</html>

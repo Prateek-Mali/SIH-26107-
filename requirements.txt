@@ -25,3 +25,4 @@ umap-learn>=0.5          # embedding map
 llvmlite<0.44            # last versions with Intel-mac wheels (umap -> numba)
 numba<0.61
 pyvis>=0.3               # knowledge graph
+pymongo>=4.6            # login database (MongoDB Atlas)

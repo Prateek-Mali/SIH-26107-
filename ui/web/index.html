@@ -51,14 +51,14 @@ footer{padding:20px clamp(20px,5vw,64px);border-top:1px solid var(--line);displa
 <div class="page">
   <header>
     <a class="brand" href="./"><div class="logo">B</div><span>BIS Assistant</span></a>
-    <nav><a class="navbtn" href="chat.html">Open chat</a></nav>
+    <nav><a class="navbtn" id="nav" href="login.html">Sign in</a></nav>
   </header>
   <main>
     <section class="hero">
       <div class="pill"><i></i>Answers from official BIS documents</div>
       <h1>Know your standard before you <em>build.</em></h1>
       <p class="lead">Ask about Indian Standards, ISI and CRS certification, QCOs and hallmarking. Every answer is cited to official BIS documents.</p>
-      <div class="cta-row"><a class="cta" href="chat.html">Start asking <span aria-hidden="true">→</span></a><span class="note">Free to use · No sign-in · English or हिन्दी</span></div>
+      <div class="cta-row"><a class="cta" href="chat.html">Start asking <span aria-hidden="true">→</span></a><span class="note">Free to use · Sign-in required · English or हिन्दी</span></div>
     </section>
     <section class="preview" aria-label="Preview">
       <div class="ph"><b>Steel water bottles</b><span>Today</span></div>
@@ -75,5 +75,8 @@ footer{padding:20px clamp(20px,5vw,64px);border-top:1px solid var(--line);displa
   </section>
   <footer><span>© 2026 BIS Assistant · Built for SIH26107</span><span>Not an official BIS service</span></footer>
 </div>
+<script>
+fetch('/auth/me').then(r => { if (r.ok) { const n = document.getElementById('nav'); n.textContent = 'Open chat'; n.href = 'chat.html'; } }).catch(() => {});
+</script>
 </body>
 </html>

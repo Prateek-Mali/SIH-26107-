@@ -34,6 +34,8 @@ QDRANT_PATH = str(ROOT / os.getenv("QDRANT_PATH", "index/qdrant"))
 TOP_K = int(os.getenv("TOP_K", "8"))
 
 DATA = ROOT / "data"
+MONGODB_URI = os.getenv("MONGODB_URI", "")          # login database (users + login sessions)
+MONGODB_DB = os.getenv("MONGODB_DB", "bis_assistant")
 SOURCES_YAML = DATA / "sources.yaml"
 CHUNKS_PATH = DATA / "processed" / "chunks.jsonl"
 BM25_PATH = ROOT / "index" / "bm25.pkl"

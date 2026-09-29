@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS summary (session_id TEXT PRIMARY KEY, text TEXT, upto
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB)
     con.executescript(SCHEMA)
+    if "owner" not in [r[1] for r in con.execute("PRAGMA table_info(sessions)")]:  # the logged-in user (web); '' = CLI
+        con.execute("ALTER TABLE sessions ADD COLUMN owner TEXT DEFAULT ''")
     return con
 
 
@@ -47,22 +49,33 @@ def redact(text: str) -> str:
 
 
 # ---------------------------------------------------------------- sessions and turns
-def new_session() -> str:
+def new_session(owner: str = "") -> str:
     sid = uuid.uuid4().hex[:12]
     with db() as con:
-        con.execute("INSERT INTO sessions VALUES (?,?,?,?)", (sid, time.time(), time.time(), ""))
+        con.execute("INSERT INTO sessions (session_id, created_at, updated_at, title, owner) VALUES (?,?,?,?,?)",
+                    (sid, time.time(), time.time(), "", owner))
     return sid
 
 
-def ensure(session_id: str | None) -> str:
+def owns(sid: str, owner: str) -> bool:
+    with db() as con:
+        row = con.execute("SELECT owner FROM sessions WHERE session_id=?", (sid,)).fetchone()
+    return bool(row) and (row[0] or "") == owner
+
+
+def ensure(session_id: str | None, owner: str = "") -> str:
+    """The session to use: the given one if it exists and belongs to this owner, else a new one."""
     purge_old()
     if session_id:
         with db() as con:
-            if con.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone():
-                return session_id
-            con.execute("INSERT INTO sessions VALUES (?,?,?,?)", (session_id, time.time(), time.time(), ""))
+            row = con.execute("SELECT owner FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+        if row:
+            return session_id if (row[0] or "") == owner else new_session(owner)
+        with db() as con:
+            con.execute("INSERT INTO sessions (session_id, created_at, updated_at, title, owner) VALUES (?,?,?,?,?)",
+                        (session_id, time.time(), time.time(), "", owner))
         return session_id
-    return new_session()
+    return new_session(owner)
 
 
 def add_turn(sid: str, role: str, text: str, citations=None, intent=None):
@@ -82,11 +95,12 @@ def turns(sid: str, last: int | None = None) -> list[dict]:
             for n, r, t, c, i in reversed(rows)]
 
 
-def sessions(limit: int = 20) -> list[dict]:
+def sessions(limit: int = 20, owner: str | None = None) -> list[dict]:
+    """owner None = all (CLI /sessions); else only that user's."""
     with db() as con:
         rows = con.execute("SELECT s.session_id, s.title, s.updated_at, COUNT(t.turn_no) FROM sessions s LEFT JOIN "
-                           "turns t USING (session_id) GROUP BY s.session_id ORDER BY s.updated_at DESC LIMIT ?",
-                           (limit,)).fetchall()
+                           "turns t USING (session_id) WHERE ? IS NULL OR s.owner = ? GROUP BY s.session_id "
+                           "ORDER BY s.updated_at DESC LIMIT ?", (owner, owner, limit)).fetchall()
     return [{"session_id": s, "title": t, "updated": time.strftime("%Y-%m-%d %H:%M", time.localtime(u)), "turns": n}
             for s, t, u, n in rows]
 
@@ -214,10 +228,10 @@ def recall_answer(sid: str, message: str = "") -> str:
     return "\n".join(lines)
 
 
-def chat(message: str, session_id: str | None = None, use_cache: bool = True) -> dict:
+def chat(message: str, session_id: str | None = None, use_cache: bool = True, owner: str = "") -> dict:
     from app.agent import ask
 
-    sid = ensure(session_id)
+    sid = ensure(session_id, owner)
     if RECALL.search(message):
         res = {"answer": recall_answer(sid, message), "citations": [], "sources_used": 0, "provider": "memory",
                "fallback": None, "latency_ms": 0, "refused": False, "cached": False,

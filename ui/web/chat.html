@@ -37,6 +37,11 @@ nav{flex:1;overflow-y:auto;padding:0 8px;display:flex;flex-direction:column;gap:
 .conv.active .x{display:block}.conv .x:hover{background:#F3F0EA;color:var(--red)}
 .foot{padding:12px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:2px;font-size:12px;line-height:1.45;color:var(--muted)}
 .foot b{font-weight:600;color:var(--ink)}
+.me{padding:12px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.initial{flex:none;width:36px;height:36px;border-radius:50%;background:var(--green);color:var(--bg);display:grid;place-items:center;font-size:14px;font-weight:600}
+.me span{flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.me button{flex:none;height:36px;padding:0 12px;border:1px solid var(--line2);border-radius:10px;background:transparent;font-size:13px;color:var(--ink)}
+.me button:hover{background:#E6E2D9}
 main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
 header{height:60px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--line)}
 .menu{width:44px;height:44px;margin-left:-10px;border:0;border-radius:10px;background:transparent;font-size:20px;color:var(--ink);display:none}
@@ -91,6 +96,7 @@ textarea{flex:1;min-height:40px;max-height:200px;padding:10px 0;border:0;resize:
     <div class="label">Recent</div>
     <nav id="convs"></nav>
     <div class="foot"><span><b>BIS Assistant</b> · Answers from official BIS documents</span><em>Not an official BIS service</em></div>
+    <div class="me"><div class="initial" id="initial">?</div><span id="email"></span><button id="logout">Log out</button></div>
   </aside>
   <main>
     <header><button class="menu" id="menu" aria-label="Open conversations">☰</button><span class="title" id="title">New conversation</span></header>
@@ -176,8 +182,15 @@ function renderSessions() {
   $('convs').querySelectorAll('[data-del]').forEach(b => b.onclick = () => removeSession(b.dataset.del));
 }
 
+function toLogin() { location.replace('login.html?next=' + encodeURIComponent(location.pathname.split('/').pop() + location.search)); }
+async function api(url, opts) {   // every call: a 401 (signed out / expired) goes to the sign-in page
+  const r = await fetch(url, opts);
+  if (r.status === 401) { toLogin(); throw new Error('signed out'); }
+  return r;
+}
+
 async function loadSessions() {
-  try { state.sessions = (await (await fetch('/sessions')).json()).filter(s => s.turns > 0); } catch (e) { state.sessions = []; }
+  try { state.sessions = (await (await api('/sessions')).json()).filter(s => s.turns > 0); } catch (e) { state.sessions = []; }
   renderSessions();
 }
 
@@ -197,7 +210,7 @@ async function openSession(sid) {
   closeSide();
   if (state.busy) return;
   try {
-    const d = await (await fetch('/session/' + encodeURIComponent(sid))).json();
+    const d = await (await api('/session/' + encodeURIComponent(sid))).json();
     state.sid = sid;
     state.messages = d.turns.map(t => ({role: t.role, content: t.content, citations: t.role === 'user' ? [] : savedSources(t.content)}));
   } catch (e) { return; }
@@ -206,7 +219,7 @@ async function openSession(sid) {
 }
 
 async function removeSession(sid) {
-  await fetch('/session/' + encodeURIComponent(sid), {method: 'DELETE'}).catch(() => {});
+  await api('/session/' + encodeURIComponent(sid), {method: 'DELETE'}).catch(() => {});
   if (sid === state.sid) newChat();
   loadSessions();
 }
@@ -227,7 +240,7 @@ async function send(text) {
   state.messages.push(bot);
   state.busy = true; $('input').value = ''; autosize(); render();
   try {
-    const res = await fetch('/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    const res = await api('/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
                                              body: JSON.stringify({message: text, session_id: state.sid})});
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const reader = res.body.getReader(), dec = new TextDecoder();
@@ -270,7 +283,13 @@ $('newChat').onclick = newChat;
 $('menu').onclick = () => { $('side').classList.add('open'); $('scrim').classList.add('open'); };
 $('scrim').onclick = closeSide;
 
+$('logout').onclick = async () => { await fetch('/auth/logout', {method: 'POST'}).catch(() => {}); store.set('bis.session', null); location.replace('./'); };
+
 (async () => {
+  const me = await fetch('/auth/me').catch(() => null);
+  if (!me || !me.ok) return toLogin();
+  const {email} = await me.json();
+  $('email').textContent = email; $('initial').textContent = email[0].toUpperCase();
   await loadSessions();
   const q = new URLSearchParams(location.search).get('q');
   const last = store.get('bis.session');
