@@ -28,9 +28,13 @@ HINGLISH = [(re.compile(p, re.I), r) for p, r in [
     (r"\s+(hai|he)(?=\s*[?.!]*\s*$)", "")]]
 
 
+# the words people use -> the official term the documents use (fixed synonyms, like IBS -> BIS)
+OFFICIAL = [(re.compile(r"\bISI\s*mark(?!\s*\(Standard Mark\))", re.I), "ISI mark (Standard Mark)")]
+
+
 def normalize(q: str) -> str:
     q = unicodedata.normalize("NFC", " ".join(q.split()))
-    for pat, rep in ALIASES + HINGLISH:
+    for pat, rep in ALIASES + HINGLISH + OFFICIAL:
         q = pat.sub(rep, q)
     # "is1293" / "IS-1293" / "IS:1293" -> "IS 1293" (but not "what is 17%")
     q = re.sub(r"\b(?:IS|is)[\-:]?(\d{3,5})\b", r"IS \1", q)

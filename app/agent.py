@@ -124,7 +124,11 @@ def t_lookup_product(reg, text):
                     "qco_date": c["qco"]["date"], "confidence": c["confidence"],
                     **({"when_it_applies": c["when_it_applies"]} if c.get("when_it_applies") else {}),
                     **({"deciding_factor": c["deciding_factor"]} if c.get("deciding_factor") else {})})
-    return {"products": out, "note": "" if out else "no matching product in the BIS compulsory-certification lists"}
+    if out:
+        return {"products": out, "note": ""}
+    # no product row: the cited rule for that case (compulsory only when notified, else voluntary)
+    return {"products": [], "note": "no matching product in the BIS compulsory-certification lists",
+            "rule": t_select_scheme(reg, text)["results"]}
 
 
 def t_select_scheme(reg, product, maker_location="unknown", role="unknown", is_electronics_it=False, is_precious_metal=False):

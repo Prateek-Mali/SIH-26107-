@@ -125,7 +125,7 @@ def test_not_covered_on_relevant_excerpts_is_retried_once(fake):
 
 
 def test_not_covered_on_weak_excerpts_is_refused_without_retry(fake):
-    fake["reply"], fake["max_rerank"] = "NOT_COVERED", 0.1
+    fake["reply"], fake["max_rerank"] = "NOT_COVERED", 0.05
     r = A.ask("How do I apply?")
     assert r["refused"] and r["trace"]["stages"]["refusal_reason"] == "model_not_covered" and len(fake["prompts"]) == 1
 

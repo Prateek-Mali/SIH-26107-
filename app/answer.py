@@ -38,7 +38,8 @@ def smalltalk(q: str, lang: str) -> str | None:
             return prompts.SMALLTALK[key][lang == "hi"]
     return None
 SUPPORT_THRESHOLD = 0.3   # reranker probability that a cited excerpt supports a sentence
-RELEVANT_SCORE = 0.5      # a NOT_COVERED reply is re-asked once when the best excerpt scores at least this
+RELEVANT_SCORE = 0.1      # a NOT_COVERED reply is re-asked once when the best excerpt scores at least this
+                          # (off-topic questions score ~0.0003; answerable ones 0.02-0.99)
 MAX_REMOVED = 0.4         # the citation check removing more than this share of sentences -> regenerate once
 MIN_CHUNKS = 6            # never send fewer excerpts than this to the model (when retrieval found any)
 CACHE_PATH = config.ROOT / "index" / "answer_cache.sqlite"
@@ -317,9 +318,9 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
 
     lines = text.split("\n")
     table_header = {i for i in range(len(lines) - 1) if re.match(r"^\s*\|?\s*:?-{3,}", lines[i + 1])}
-    def splittable(line: str) -> bool:  # only long prose lines are split into sentences (never headings/tables)
-        raw = line.strip()
-        return len(raw) > 200 and not raw.startswith(("|", "#", "**"))
+    def splittable(line: str) -> bool:  # prose lines are checked sentence by sentence (never headings/tables):
+        raw = line.strip()               # two sentences on one line may cite different excerpts
+        return not raw.startswith(("|", "#"))
     units = [(li, SENTENCE_SPLIT.split(line) if splittable(line) else [line]) for li, line in enumerate(lines)]
     claims = []  # (line index, unit index, claim text, cited numbers); cited = [] for an uncited fact
     for li, parts in units:
@@ -640,7 +641,7 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         have = {c["chunk_id"] for c in back}
         ret["chunks"] = back + [c for c in ret["chunks"] if c["chunk_id"] not in have]
     tools_block, tool_trace = "", None
-    if ret["chunks"] and is_product_question(q, u):
+    if is_product_question(q, u):  # even when the search found nothing: "no product row" has its own cited rule
         # Standard Recommender + Scheme Selector: their evidence (product rows, rule proofs) comes first in the context
         from app.recommender import recommend_standards, select_scheme, tool_context
         t_tools = time.time()

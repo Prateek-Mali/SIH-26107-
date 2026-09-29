@@ -80,6 +80,12 @@ SYNONYMS = [
     (r"\bcrs\b", "compulsory registration"),
     (r"\bhuid\b", "hallmark unique identification"),
     (r"\bregistration\b", "registration licence application"),
+    # verbs people type -> the nouns the documents use (keyword search has no stemming)
+    (r"\bcomplain(ed|ing|s)?\b", "complaint"), (r"\brenew(ed|ing|s)?\b", "renewal"),
+    (r"\bapply(ing)?\b|\bapplied\b", "application"), (r"\bcancel(l?ed|l?ing|s)?\b", "cancellation"),
+    (r"\bsuspend(ed|ing|s)?\b", "suspension"), (r"\binspect(ed|ing|s)?\b", "inspection"),
+    (r"\bregister(ed|ing|s)?\b", "registration"), (r"\bcertif(y|ied|ying)\b", "certification"),
+    (r"\btest(ed|ing)?\b", "testing test report"), (r"\bfake|counterfeit|misuse\b", "misuse"),
 ]
 
 
@@ -170,6 +176,21 @@ def _store():
 def _dedupe_key(c: dict) -> str:
     """Near-duplicates (the same QCO clause repeated in dozens of orders) share this key."""
     return re.sub(r"[^a-z]", "", c["text"].lower())[:220]
+
+
+def cross_references(chunk: dict, query: str = "", limit: int = 2) -> list[dict]:
+    """Law points to law: for 'Section 17' of the Act, the chunks of the same document that cite 'section 17'
+    (e.g. Section 29(3): 'contravenes the provisions of section 17 shall be punishable ...')."""
+    m = re.search(r"\b(Section|Regulation|Rule)\s+(\d+)", chunk.get("section") or "")
+    if not m or chunk.get("doc_type") not in ("act", "rule", "regulation"):
+        return []
+    by_id, order = _store()
+    ref = re.compile(rf"\b{m.group(1)}\s+{m.group(2)}\b(?!\s*\()", re.I)
+    own = re.compile(rf"\b{m.group(1)}\s+{m.group(2)}\b", re.I)
+    refs = [by_id[cid] for cid in order.get(chunk["source_id"], []) if cid != chunk["chunk_id"]
+            and ref.search(by_id[cid]["text"]) and not own.search(by_id[cid].get("section") or "")]
+    q = set(tokenize(query))  # the referring chunks most about the question first (title + text)
+    return sorted(refs, key=lambda c: -len(q & set(tokenize(embed_text(c)))))[:limit]
 
 
 def neighbours(chunk: dict) -> list[dict]:
@@ -307,7 +328,7 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
     context = list(top)
     for i, c in enumerate(top):
         if with_neighbours and i < 5 and "::row" not in c["chunk_id"]:  # a table row's neighbours are unrelated products
-            for nb in neighbours(c):
+            for nb in neighbours(c) + cross_references(c, rule_q):
                 if nb["chunk_id"] not in have:
                     have.add(nb["chunk_id"])
                     context.append({**nb, "neighbour_of": c["chunk_id"]})
