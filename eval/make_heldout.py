@@ -60,8 +60,12 @@ def main():
     pick = lambda: rng.choice(by_doc[docs[pick.i % len(docs)]]) if not setattr(pick, "i", pick.i + 1) else None
     pick.i = 0
     rows, failed = [], 0
+    if OUT.exists():  # resume: keep questions already written
+        rows = [json.loads(l) for l in OUT.open(encoding="utf-8") if l.strip()]
+        for _ in range(sum(len(r["expected_chunk_ids"]) for r in rows)):
+            pick()  # advance past documents already used
     for kind, n in PLAN.items():
-        made = 0
+        made = sum(r["type"] == kind for r in rows)
         while made < n and failed < 30:
             try:
                 if kind == "off_topic":
@@ -90,6 +94,8 @@ def main():
                          "expected_source_ids": list(dict.fromkeys(c["source_id"] for c in ctx)),
                          "reference": q.get("answer_facts", "")})
             made += 1
+            print(f"  {len(rows)}/60 written", flush=True)
+            OUT.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     rng.shuffle(rows)
     for i, r in enumerate(rows):
         r["id"] = f"h{i + 1:03d}"
