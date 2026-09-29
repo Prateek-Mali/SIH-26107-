@@ -182,26 +182,55 @@ def neighbours(chunk: dict) -> list[dict]:
     return [by_id[ids[j]] for j in (i - 1, i + 1) if 0 <= j < len(ids)]
 
 
+MIN_RERANK = 0.003  # below this for EVERY candidate, the search found nothing about the question (search_empty)
+
+
+def question_parts(q: str) -> list[str]:
+    """A multi-part question -> its parts, each searched on its own (deterministic; one long query mixes the
+    topics and finds neither). 'What is X? Additionally, what is Y?' -> ['What is X?', 'what is Y?']"""
+    parts = [re.sub(r"^(additionally|also|and|further(more)?|moreover)[,\s]+", "", p.strip(), flags=re.I)
+             for p in re.split(r"(?<=[?.!])\s+", q)]
+    parts = [p for p in parts if len(p.split()) >= 5]
+    return parts if len(parts) >= 2 else []
+
+
+def _passes(c: dict, filters: dict) -> bool:
+    if filters.get("scheme") and c.get("scheme") not in (filters["scheme"], "general"):
+        return False
+    if filters.get("doc_type") and c.get("doc_type") != filters["doc_type"]:
+        return False
+    return not filters.get("source") or c["source_id"].startswith(filters["source"])
+
+
 def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker: bool = True,
-             extra_queries: list[str] | None = None, intent: str | None = None) -> dict:
+             extra_queries: list[str] | None = None, intent: str | None = None, filters: dict | None = None,
+             with_neighbours: bool = True) -> dict:
     """question -> {"chunks": final context (top_k + neighbours), "trace": {...}}.
 
-    normalize -> rule-based expansions -> vector + BM25 for each query -> RRF -> exact product rows
-    -> scheme filter/boost + source boosts -> collapse duplicates -> rerank vote -> top_k -> neighbours."""
+    normalize -> concept expansion (term graph) -> vector + BM25 for each query -> RRF -> exact product rows
+    -> filters, scheme boost -> collapse duplicates -> rerank vote -> top_k -> neighbours.
+    Deterministic: the same question always gives the same chunks (no LLM inside)."""
     from app import expand, tools
 
     t0 = time.time()
+    filters = {k: v for k, v in (filters or {}).items() if v}
     q = expand.normalize(question)
     en = expand.to_english(q) if expand.detect_lang(q) == "hi" else ""
     rule_q = expand.normalize(en) if en else q          # rules are written for English
-    extra = [expand.normalize(x) for x in (extra_queries or []) if x and x.strip()]
-    queries = list(dict.fromkeys([q] + ([rule_q] if en else []) + extra[:3] + expand.expansions(rule_q)))[:7]
+    extra = [expand.normalize(x) for x in (extra_queries or []) if x and x.strip()] + question_parts(rule_q)
+    concepts = expand.concept_terms(" ".join([rule_q] + extra[:3]))
+    queries = list(dict.fromkeys([q] + ([rule_q] if en else []) + extra[:3]
+                                 + ([f"{rule_q} {' '.join(concepts)}"] if concepts else [])))[:7]
     scheme = expand.detect_scheme(rule_q)
-    boosts = expand.source_boosts(rule_q)
+    basic = intent == "basic" or expand.is_basic(rule_q)
 
-    lists = [bm25_search(x, None, candidates) for x in queries]
-    lists += vector_search_many(queries, candidates)
-    fused = rrf(*lists)
+    bm = [bm25_search(x, None, candidates) for x in queries]
+    vec = vector_search_many(queries, candidates)
+    fused = rrf(*bm, *vec)
+    per_query = []
+    for x, b, v in zip(queries, bm, vec):
+        f = rrf(b, v)
+        per_query.append({"query": x, "count": len(f), "top3": [[c["chunk_id"], round(c["score"], 4)] for c in f[:3]]})
 
     # exact product / IS-number rows from the scraped tables always come first
     has_is = bool(tools._norm_is(rule_q))
@@ -215,12 +244,16 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
         if r["chunk_id"] not in fused_ids and r["chunk_id"] in by_id:
             fused.append({**by_id[r["chunk_id"]], "score": 0.0})
 
+    if filters:
+        fused = [c for c in fused if _passes(c, filters)]
+
     def adjusted(c: dict) -> float:
         score = c.get("score", 0.0)
+        if basic and (c.get("agent") == "general" or c.get("doc_type") == "faq"
+                      or (c["source_id"] == "bis_act_2016" and "Definitions" in (c.get("section") or ""))):
+            score *= 1.6  # definition questions: About-BIS pages, the Act's definitions and FAQs first
         if c["chunk_id"] in row_ids:
             score += 0.05 if has_is else 0.01
-        if any(c["source_id"].startswith(b) for b in boosts):
-            score *= 1.6
         cs = c.get("scheme", "general")
         if scheme:
             if cs == scheme:
@@ -269,18 +302,23 @@ def retrieve(question: str, top_k: int = 12, candidates: int = 30, use_reranker:
             break
 
     # add the chunk before/after each of the top 5 so a rule is not cut in half
+    # ranked hits first, neighbours after: the context budget keeps every hit before any neighbour
     have = {c["chunk_id"] for c in top}
-    context = []
+    context = list(top)
     for i, c in enumerate(top):
-        context.append(c)
-        if i < 5 and "::row" not in c["chunk_id"]:  # a table row's neighbours are unrelated products
+        if with_neighbours and i < 5 and "::row" not in c["chunk_id"]:  # a table row's neighbours are unrelated products
             for nb in neighbours(c):
                 if nb["chunk_id"] not in have:
                     have.add(nb["chunk_id"])
                     context.append({**nb, "neighbour_of": c["chunk_id"]})
+    max_rerank = max((c.get("rerank", 0.0) for c in pool), default=0.0)
+    empty = not pool or (rerank_ms > 0 and max_rerank < MIN_RERANK)
     return {
-        "question": q, "chunks": context,
-        "trace": {"queries": queries, "translated": en, "scheme": scheme, "boosts": boosts,
+        "question": q, "chunks": [] if empty else context,
+        "trace": {"queries": queries, "translated": en, "scheme": scheme, "concept_terms": concepts,
+                  "filters": {**filters, **({"scheme_boost": scheme} if scheme else {}), **({"basic": True} if basic else {}),
+                              "product_rows": len(rows)},
+                  "per_query": per_query, "max_rerank": round(max_rerank, 4), "search_empty": empty,
                   "vector": _vector_error if time.time() < _vector_paused_until else "ok",
                   "candidates": len(fused), "after_dedupe": len(pool), "rerank_ms": rerank_ms,
                   "ms": int((time.time() - t0) * 1000)},
@@ -296,5 +334,6 @@ def reload():
             _qdrant().close()
         except Exception:
             pass
-    for f in (_bm25, _qdrant, _store, tools.product_rows):
+    from app import expand
+    for f in (_bm25, _qdrant, _store, tools.product_rows, expand._term_graph):
         f.cache_clear()

@@ -162,6 +162,26 @@ sources:
     agent: law
     priority: 1
 
+  # ───────────── general: what BIS is (for basic "what is BIS / ISI" questions) ─────────────
+  - id: about_bis
+    title: About BIS
+    url: https://www.bis.gov.in/the-bureau/about-bis/?lang=en
+    type: html
+    agent: general
+    priority: 1
+  - id: origin_of_bis
+    title: Origin of BIS
+    url: https://www.bis.gov.in/the-bureau/origin-of-bis/?lang=en
+    type: html
+    agent: general
+    priority: 1
+  - id: standards_india
+    title: Standards in India
+    url: https://www.bis.gov.in/consumer-overview/standards-india/?lang=en
+    type: html
+    agent: general
+    priority: 1
+
   # ───────────── 2. CERTIFICATION: schemes, process, fees, FMCS ─────────────
   - id: cert_overview
     title: Product Certification Overview

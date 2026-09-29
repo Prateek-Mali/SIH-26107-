@@ -1,6 +1,7 @@
 """FastAPI server:  uvicorn app.api:app --port 8000
 
-POST /chat           {message, session_id} -> {answer, citations, sources_used, latency_ms, provider, trace}
+POST /chat           {message, session_id} -> {answer, citations, sources_used, latency_ms, provider, fallback, trace}
+                     (trace.stages: every step, see app/answer.py)
 POST /chat/stream    same, as Server-Sent Events: status, token..., citations, trace, done
 POST /search         {query} -> the raw retrieval result (for checking accuracy)
 GET  /health         providers, embeddings, index counts
@@ -13,7 +14,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict, deque
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,14 +28,12 @@ from app.retrieval import reload, retrieve
 app = FastAPI(title="BIS Assistant API", version="0.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# short in-memory history per session, only so follow-up questions work (never written to disk)
-HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=12))  # last 6 turns
 REINDEX = {"running": False, "started": None, "finished": None, "log": ""}
 
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
-    session_id: str = Field("default", max_length=100)
+    session_id: str | None = Field(None, max_length=100, pattern=r"^[A-Za-z0-9_-]*$")  # none -> a new session
 
 
 class SearchRequest(BaseModel):
@@ -50,22 +48,28 @@ class SchemeRequest(BaseModel):
     profile: dict = Field(default_factory=dict)  # maker_location, role, product, is_electronics_it, is_precious_metal
 
 
-def _remember(session_id: str, message: str, result: dict):
-    short = re.split(r"\n\n\*\*(?:Sources|स्रोत):\*\*", result["answer"])[0][:1500]
-    HISTORY[session_id].extend([{"role": "user", "content": message},
-                                {"role": "assistant", "content": short, "profile": result.get("profile")}])
-
-
 def _chat(req: ChatRequest) -> dict:
-    result = ask(req.message, list(HISTORY[req.session_id]))
-    _remember(req.session_id, req.message, result)
-    return result
+    from app import memory
+    return memory.chat(req.message, req.session_id or None)  # local SQLite memory (app/memory.py)
+
+
+@app.get("/session/{session_id}")
+def get_session(session_id: str):
+    from app import memory
+    return {"session_id": session_id, "profile": memory.profile(session_id), "turns": memory.turns(session_id)}
+
+
+@app.delete("/session/{session_id}")
+def delete_session(session_id: str):
+    from app import memory
+    memory.forget(session_id)
+    return {"deleted": session_id}
 
 
 @app.get("/")
 def root():
     return {"name": "BIS Assistant API", "docs": "/docs",
-            "endpoints": ["POST /chat", "POST /chat/stream", "POST /search", "POST /recommend", "POST /scheme", "GET /health", "GET /sources",
+            "endpoints": ["GET /session/{id}", "DELETE /session/{id}", "POST /chat", "POST /chat/stream", "POST /search", "POST /recommend", "POST /scheme", "GET /health", "GET /sources",
                           "POST /admin/reindex"]}
 
 
@@ -90,8 +94,8 @@ async def chat_stream(req: ChatRequest):
             yield {"event": "token", "data": json.dumps({"text": m.group(0)}, ensure_ascii=False)}
         yield {"event": "citations", "data": json.dumps(result["citations"], ensure_ascii=False)}
         yield {"event": "trace", "data": json.dumps(result["trace"], ensure_ascii=False)}
-        yield {"event": "done", "data": json.dumps({k: result[k] for k in ("provider", "latency_ms", "sources_used",
-                                                                            "refused", "cached")})}
+        yield {"event": "done", "data": json.dumps({k: result.get(k) for k in ("session_id", "provider", "fallback", "latency_ms",
+                                                                                "sources_used", "refused", "cached")})}
     return EventSourceResponse(iterate_in_threadpool(events()))
 
 
@@ -134,11 +138,11 @@ def health():
     n_chunks = sum(1 for _ in config.CHUNKS_PATH.open()) if config.CHUNKS_PATH.exists() else 0
     docs = {json.loads(l)["source_id"] for l in config.CHUNKS_PATH.open()} if n_chunks else set()
     return {"status": "ok",
-            "llm": {"order": ["gemini", "groq", "ollama"], "gemini_model": config.GEMINI_MODEL,
+            "llm": {"answer_model": __import__("app.llm", fromlist=["x"]).primary_label(),
+                    "gemini_model": config.GEMINI_MODEL,
                     "gemini_keys": len(config.GEMINI_API_KEYS), "groq": bool(config.GROQ_API_KEY),
-                    "groq_model": config.GROQ_MODEL, "ollama_model": config.OLLAMA_MODEL},
-            "embeddings": config.EMBED_PROVIDER + ":" + (config.OLLAMA_EMBED_MODEL if config.EMBED_PROVIDER == "ollama"
-                                                         else config.GEMINI_EMBED_MODEL),
+                    "groq_model": config.GROQ_MODEL},
+            "embeddings": config.EMBED_PROVIDER + ":" + __import__("app.llm", fromlist=["x"]).embed_model_id(),
             "index": {"chunks": n_chunks, "vectors": _count_points(), "documents": len(docs),
                       "bm25": config.BM25_PATH.exists()},
             "reindex": REINDEX}
@@ -167,7 +171,7 @@ def _reindex_job():
     REINDEX.update(running=True, started=time.strftime("%H:%M:%S"), finished=None, log="")
     log = []
     try:
-        for cmd in (["scripts/parse.py"], ["scripts/chunk.py"], ["scripts/build_index.py"]):
+        for cmd in (["scripts/parse.py"], ["scripts/chunk.py"], ["scripts/build_index.py"], ["scripts/build_term_graph.py"]):
             p = subprocess.run([sys.executable, *cmd], cwd=config.ROOT, capture_output=True, text=True)
             log.append(f"$ {' '.join(cmd)}\n{p.stdout[-1500:]}{p.stderr[-800:]}")
             if p.returncode != 0:

@@ -4,11 +4,14 @@
     detect_lang(q)     "hi" if Devanagari, else "en"
     expansions(q)      up to 3 extra search queries from a synonym map
     detect_scheme(q)   the certification scheme the question is about, or None
+    concept_terms(q)   related terms from the domain vocabulary (data/structured/term_graph.json)
     source_boosts(q)   source_id prefixes / doc types to prefer for this question
 """
+import json
 import re
 import unicodedata
 from functools import lru_cache
+from pathlib import Path
 
 ALIASES = [
     (re.compile(r"\b(?:ibs|bsi|b\.\s*i\.\s*s\.?|bureau of indian standards?)(?=\W|$)", re.I), "BIS"),
@@ -16,14 +19,33 @@ ALIASES = [
 ]
 
 
+# Hinglish (Hindi in Latin letters) -> English question words
+HINGLISH = [(re.compile(p, re.I), r) for p, r in [
+    (r"\b(\w[\w ]{0,40}?)\s+kaise\s+(kare|karen|karein|karu|karun|kre|kren|hota hai|hoga)\b", r"how to do \1"),
+    (r"\b(\w[\w ]{0,40}?)\s+(kya|kyaa)\s+(hai|hota hai|he|h)\b", r"what is \1"),
+    (r"\b(kitna|kitni|kitne)\b", "how much"), (r"\bkaise\b", "how"), (r"\bkya\b", "what"),
+    (r"\bkab\b", "when"), (r"\bkahan\b", "where"), (r"\bchahiye\b", "is needed"),
+    (r"\s+(hai|he)(?=\s*[?.!]*\s*$)", "")]]
+
+
 def normalize(q: str) -> str:
     q = unicodedata.normalize("NFC", " ".join(q.split()))
-    for pat, rep in ALIASES:
+    for pat, rep in ALIASES + HINGLISH:
         q = pat.sub(rep, q)
     # "is1293" / "IS-1293" / "IS:1293" -> "IS 1293" (but not "what is 17%")
     q = re.sub(r"\b(?:IS|is)[\-:]?(\d{3,5})\b", r"IS \1", q)
     q = re.sub(r"\bIS\s*[\-:]\s*(\d{2,5})\b", r"IS \1", q)
     return q
+
+
+BASIC = re.compile(r"^\s*(what\s+(is|are|does)\b(?!.*\b(fee|cost|penalty|time|process|procedure|steps?|documents?)\b)|"
+                   r"what do(es)? .{1,40} mean|define\b|meaning of|(what is the )?difference between|who (are|made|built) you|"
+                   r"are you (chatgpt|gpt|a bot|human))", re.I)
+
+
+def is_basic(q: str) -> bool:
+    """A basic / definition question ('what is a QCO', 'difference between BIS and ISI'): short plain answer."""
+    return bool(BASIC.search(q)) and len(q.split()) <= 14
 
 
 def detect_lang(q: str) -> str:
@@ -34,6 +56,45 @@ def expansions(q: str, limit: int = 3) -> list[str]:
     """No hand-written query expansions any more (they were tuned to test questions); the agent writes its own
     search queries. Kept as a no-op so the fallback pipeline still runs."""
     return []
+
+
+TERM_GRAPH = Path(__file__).resolve().parent.parent / "data" / "structured" / "term_graph.json"
+CONCEPT_MIN, CONCEPT_PER_TERM, CONCEPT_MAX = 0.6, 3, 6
+# everyday English words carry no domain concept: never expand them
+PLAIN_WORDS = set("""about above after again against already also always another anyone anything around because
+before being below between both could does doing done during each either else enough ever every first from
+give given gives going gone good have having here into just keep know last later less like made make many
+might more most much must need needs never next only other over please really same should since some
+something still such sure take tell than that their them then there these they thing think this those
+though through time today under until very want wants what when where whether which while will with within
+without would year years yours happen happens happened dont doesnt cant wont""".split())
+
+
+@lru_cache(maxsize=1)
+def _term_graph() -> dict:
+    try:
+        return json.loads(TERM_GRAPH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}  # not built yet (scripts/build_term_graph.py): no expansion
+
+
+def concept_terms(q: str) -> list[str]:
+    """Related terms by co-occurrence in the documents, for every content word of the query (same for every
+    question: no per-question rules). 'objections' -> remove, removal, thirty."""
+    import sys
+    sys.path.insert(0, str(TERM_GRAPH.parent.parent.parent / "scripts"))
+    from build_term_graph import stem
+
+    graph, words, out = _term_graph(), [], []
+    for w in re.findall(r"[a-z]{4,}", q.lower()):
+        if w in PLAIN_WORDS:
+            continue
+        w = stem(w)
+        if w not in words:
+            words.append(w)
+    for w in words:
+        out += [t for t, s in graph.get(w, [])[:CONCEPT_PER_TERM] if s >= CONCEPT_MIN and t not in words and t not in out]
+    return out[:CONCEPT_MAX]
 
 
 def detect_scheme(q: str) -> str | None:

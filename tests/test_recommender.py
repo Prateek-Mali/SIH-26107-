@@ -11,17 +11,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("BIS_QUIET", "1")
 
-import httpx  # noqa: E402
 import pytest  # noqa: E402
 
 from app import config  # noqa: E402
 
 
-def ollama_up() -> bool:
-    try:
-        return httpx.get(f"{config.OLLAMA_URL}/api/tags", timeout=3).status_code == 200
-    except httpx.HTTPError:
-        return False
+def embedder_ready() -> bool:
+    """The embeddings now run in-process (EMBED_PROVIDER=local): only the downloaded model is needed."""
+    return (config.ROOT / "index" / "models" / "models--BAAI--bge-m3").exists()
 
 
 def has(cands, digits):
@@ -69,8 +66,8 @@ def run_case(desc):
     return rec, sch, time.time() - t0
 
 
-@pytest.mark.skipif(not ollama_up() or not (config.DATA / "structured" / "product_index.csv").exists(),
-                    reason="needs Ollama (bge-m3) and scripts/build_product_index.py")
+@pytest.mark.skipif(not embedder_ready() or not (config.DATA / "structured" / "product_index.csv").exists(),
+                    reason="needs the bge-m3 model in index/models and scripts/build_product_index.py")
 @pytest.mark.parametrize("desc,check,expected", CASES, ids=[c[0][:30] for c in CASES])
 def test_case(desc, check, expected):
     rec, sch, _ = run_case(desc)
@@ -82,8 +79,8 @@ def test_no_invented_is_numbers():
     import csv
     from app.recommender import INDEX_CSV
     known = {r["is_number"] for r in csv.DictReader(INDEX_CSV.open(encoding="utf-8"))}
-    if not ollama_up():
-        pytest.skip("needs Ollama")
+    if not embedder_ready():
+        pytest.skip("needs the bge-m3 model")
     rec, _, _ = run_case("stainless steel water bottle for drinking water")
     assert all(c["is_number"] in known for c in rec["candidates"])
 

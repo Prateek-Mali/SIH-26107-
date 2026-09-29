@@ -20,12 +20,22 @@ CHUNKS = [chunk(0, page=3), chunk(1, page=3), chunk(2, "cert_fee", None, "Applic
 @pytest.fixture
 def fake(monkeypatch):
     state = {"reply": "**Short answer**: Apply in Form-V [1][2]. The application fee is Rs 1000 [3].\n"
-                      "Moon rocks are required with the application form [1]."}
-    monkeypatch.setattr(A, "retrieve", lambda q, **k: {"chunks": CHUNKS, "trace": {"queries": [q], "ms": 1}})
+                      "You apply in Form-V with the fee [2].\n"
+                      "Moon rocks are required with the application form [1].",
+             "replies": [], "prompts": [], "max_rerank": 0.9, "empty": False}
+    monkeypatch.setattr(A, "retrieve", lambda q, **k: {
+        "chunks": [] if state["empty"] else CHUNKS,
+        "trace": {"queries": [q], "ms": 1, "max_rerank": state["max_rerank"], "search_empty": state["empty"]}})
     monkeypatch.setattr(A, "understand", lambda q, h=None, p=None: {
         "intent": "process", "user_role": "manufacturer", "user_goal": "", "product_or_topic": "",
-        "standalone_question": q, "sub_questions": [], "language": "en", "provider": "fake"})
-    monkeypatch.setattr(llm, "generate_with_provider", lambda *a, **k: (state["reply"], "gemini:fake"))
+        "standalone_question": q, "sub_questions": [], "language": "en", "provider": "fake", "understand_ok": "json"})
+
+    def fake_llm(prompt, *a, **k):
+        state["prompts"].append(prompt)
+        return (state["replies"].pop(0) if state["replies"] else state["reply"]), "gemini:fake"
+
+    monkeypatch.setattr(llm, "generate_with_provider", fake_llm)
+    monkeypatch.setattr(llm, "primary_label", lambda small=False: "gemini:fake")
 
     def fake_scores(q, passages):  # "supported" when the claim shares a key word with the passage
         return [0.9 if any(w in p.lower() for w in ("form-v", "rs 1000") if w in q.lower()) else 0.05 for p in passages]
@@ -84,13 +94,64 @@ def test_expand_rules():
     assert expand.detect_scheme("CRS registration for mobile chargers") == "II"
 
 
-def test_provider_fallback(monkeypatch):
+def test_provider_fallback_is_visible(monkeypatch):
     from app import config
     monkeypatch.setattr(config, "KEY_IS_SET", True)
     monkeypatch.setattr(config, "GROQ_API_KEY", "k")
-    monkeypatch.setattr(llm, "_call", lambda *a, **k: (_ for _ in ()).throw(llm.AllModelsBusy("429")))
+    monkeypatch.setattr(config, "ANSWER_PROVIDER", "gemini")
+    monkeypatch.setattr(llm, "_gemini_once", lambda *a, **k: (_ for _ in ()).throw(llm.AllModelsBusy("429")))
     monkeypatch.setattr(llm, "groq_generate", lambda *a, **k: "from groq")
-    assert llm.generate_with_provider("q") == ("from groq", f"groq:{config.GROQ_MODEL}")
+    text, provider = llm.generate_with_provider("q")
+    assert (text, provider) == ("from groq", f"groq:{config.GROQ_MODEL}")
+    assert llm.fallback_of(provider) == provider                      # not the pinned model -> FALLBACK
+    assert llm.fallback_of(f"gemini:{config.GEMINI_MODEL}") is None   # the pinned model
+
+
+def test_pinned_provider_goes_first(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "KEY_IS_SET", True)
+    monkeypatch.setattr(config, "GROQ_API_KEY", "k")
+    monkeypatch.setattr(config, "ANSWER_PROVIDER", "groq")
+    monkeypatch.setattr(llm, "_gemini_once", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gemini called")))
+    monkeypatch.setattr(llm, "groq_generate", lambda *a, **k: "from groq")
+    assert llm.generate_with_provider("q")[0] == "from groq"
+
+
+def test_not_covered_on_relevant_excerpts_is_retried_once(fake):
+    fake["replies"] = ["NOT_COVERED"]  # first reply; the retry gets the normal cited answer
+    r = A.ask("How do I apply?")
+    st = r["trace"]["stages"]
+    assert not r["refused"] and st["retried_not_covered"] and "excerpts are relevant" in fake["prompts"][1]
+
+
+def test_not_covered_on_weak_excerpts_is_refused_without_retry(fake):
+    fake["reply"], fake["max_rerank"] = "NOT_COVERED", 0.1
+    r = A.ask("How do I apply?")
+    assert r["refused"] and r["trace"]["stages"]["refusal_reason"] == "model_not_covered" and len(fake["prompts"]) == 1
+
+
+def test_search_empty_is_refused_before_the_model(fake):
+    fake["empty"] = True
+    r = A.ask("What is the capital of France?")
+    assert r["refused"] and r["trace"]["stages"]["refusal_reason"] == "search_empty" and not fake["prompts"]
+
+
+def test_heavy_removal_regenerates_from_supporting_excerpts(fake):
+    fake["reply"] = ("The application fee is Rs 1000 [3].\nMoon rocks are required with the application [1].\n"
+                     "Dragons inspect every factory each year [2].")
+    fake["replies"] = [None, "The application fee is Rs 1000 [1]."]  # None -> first call uses fake["reply"]
+    fake["replies"][0] = fake["reply"]
+    r = A.ask("fee?")
+    st = r["trace"]["stages"]
+    assert st["regenerated"] and st["regenerated"]["kept_chunks"] == ["cert_fee::0002"]
+    assert "Rs 1000 [1]" in r["answer"] and "Moon" not in r["answer"] and "only these excerpts" in fake["prompts"][1].lower()
+
+
+def test_empty_tables_are_dropped():
+    assert A.drop_empty_tables("Intro\n| IS | Title |\n|---|---|\nEnd") == "Intro\nEnd"
+    assert A.drop_empty_tables("| IS | Title |\n|---|---|\n| - | [2] |") == ""
+    t = "| IS | Title |\n|---|---|\n| IS 1 | Cement [1] |"
+    assert A.drop_empty_tables(t) == t
 
 
 def test_marker_formats_are_normalised():
@@ -102,11 +163,24 @@ def test_splitter_and_list_renumbering():
     assert A.renumber_lists("1. a\n2. b\n4. c\n\ntext\n3. d") == "1. a\n2. b\n3. c\n\ntext\n1. d"
 
 
-def test_understand_rules_and_profile_memory(monkeypatch):
+def test_understand_rules_and_profile_memory(monkeypatch, tmp_path):
     from app import understand as U
+    monkeypatch.setattr(U, "FAIL_LOG", tmp_path / "failures.jsonl")  # tests must not write to data/
     monkeypatch.setattr(llm, "generate_with_provider", lambda *a, **k: (_ for _ in ()).throw(llm.ProviderError("x")))
     u = U.understand("Difference between ISI mark and CRS?")
-    assert u["intent"] == "compare"
+    assert u["intent"] == "basic" and u["understand_ok"] == "rules-fallback" and u["attempts"] == 2
+    assert len((tmp_path / "failures.jsonl").read_text().splitlines()) == 1  # logged once per question
+
+
+def test_understand_rejects_invalid_json_then_accepts_valid(monkeypatch):
+    from app import understand as U
+    good = ('{"intent": "process", "user_role": "manufacturer", "user_goal": "", "product_or_topic": "cement", '
+            '"standalone_question": "How do I get an ISI licence for cement?", "sub_questions": []}')
+    replies = iter(['{"intent": "chat"}', good])
+    monkeypatch.setattr(llm, "generate_with_provider", lambda *a, **k: (next(replies), "gemini:fake"))
+    u = U.understand("How do I get an ISI licence for cement?")
+    assert u["understand_ok"] == "json" and u["attempts"] == 2 and u["intent"] == "process"
+    assert U.validate({"intent": "chat"}) == "missing user_role"
     u = U.understand("and how much does it cost?", [], {"user_role": "importer", "product_or_topic": "LED bulbs"})
     assert u["user_role"] == "importer" and u["product_or_topic"] == "LED bulbs"
 

@@ -3,7 +3,9 @@
     .venv/bin/python ui/chat_cli.py            # runs the pipeline in this process
     .venv/bin/python ui/chat_cli.py --api      # use a running API at http://localhost:8000
 
-Commands: /trace (toggle "How I answered"), /new (new conversation), /nocache, /quit
+Commands: /trace (toggle "How I answered": every stage), /nocache, /new, /history, /profile, /forget, /sessions,
+/resume <id>, /quit. Memory is local (data/memory.sqlite); the last session is resumed on restart (data/.last_session).
+The footer shows the answer model; "FALLBACK: <provider>" means the pinned model (ANSWER_PROVIDER) failed.
 """
 import logging
 import os
@@ -33,40 +35,89 @@ def ask_api(message: str, session: str) -> dict:
 
 def print_trace(res: dict):
     tr = res.get("trace", {})
-    rt = tr.get("retrieval", {})
-    print(f"{DIM}── How I answered ──")
-    if rt:
-        print(f"  queries: {rt.get('queries')}")
-        print(f"  scheme: {rt.get('scheme')}  boosts: {rt.get('boosts')}  vector search: {rt.get('vector')}")
-        print(f"  retrieval {rt.get('ms')} ms (reranker {rt.get('rerank_ms')} ms) · generation {tr.get('generate_ms')} ms"
-              f" · citation check {tr.get('verify_ms')} ms")
-    for c in tr.get("chunks", []):
-        nb = f" (neighbour of {c['neighbour_of']})" if c.get("neighbour_of") else ""
-        page = f" p.{c['page']}" if c.get("page") else ""
-        rr = f"{c['rerank']:.2f}" if isinstance(c.get("rerank"), (int, float)) else "  - "
-        print(f"  [{c['n']:2}] rerank {rr}  {c['chunk_id']}{page} [{c.get('scheme')}]{nb}")
-    checks = tr.get("citation_check") or []
-    if checks:
-        print(f"  citation check: {len(checks)} sentence(s) changed")
-        for x in checks:
-            print(f"    {x['action']} (score {x.get('score')}): {x['sentence'][:110]}")
-    u = tr.get("understand")
-    if u:
-        print(f"  understood: intent={u.get('intent')} role={u.get('user_role')} product={u.get('product_or_topic')!r}")
-        print(f"  goal: {u.get('user_goal')}  |  standalone: {u.get('standalone_question')}")
-    if tr.get("note"):
-        print(f"  note: {tr['note']}")
+    st = tr.get("stages") or {}
+    print(f"{DIM}── How I answered ({st.get('mode', '?')}) ──")
+    if st.get("rewritten_question"):
+        print(f"  rewritten question: {st['rewritten_question']}")
+    if st.get("reused_earlier_chunks"):
+        print(f"  reused from the earlier answer: {st['reused_earlier_chunks']}")
+    print(f"  understand: {st.get('understand_ok')}"
+          + (f" ({st['understand_attempts']} attempt(s))" if st.get("understand_attempts") else "")
+          + f"  |  intent: {st.get('intent')}")
+    if st.get("tools"):
+        print(f"  tools: {' -> '.join(st['tools'])}")
+    print(f"  sub-queries: {st.get('sub_queries')}")
+    print(f"  filters: {st.get('filters')}  |  concept terms: {st.get('concept_terms')}")
+    for pq in st.get("per_query") or []:
+        top = ", ".join(f"{cid} ({sc})" for cid, sc in pq.get("top3", []))
+        print(f"    {pq['count']:>3} for {pq['query'][:70]!r}: {top}")
+    print(f"  best rerank: {st.get('max_rerank')}  |  search empty: {st.get('search_empty')}")
+    sent = st.get("sent_to_llm") or []
+    print(f"  sent to the model ({len(sent)}): {', '.join(sent[:12])}{' ...' if len(sent) > 12 else ''}")
+    print(f"  provider: {st.get('provider')}  |  fallback: {st.get('fallback')}")
+    print(f"  model said NOT_COVERED: {st.get('model_not_covered')}  |  retried: {st.get('retried_not_covered')}"
+          + (f" -> still NOT_COVERED: {st['model_not_covered_after_retry']}" if st.get("retried_not_covered") else ""))
+    if st.get("regenerated"):
+        print(f"  regenerated: {st['regenerated']['why']} -> kept {st['regenerated']['kept_chunks']}")
+    for x in st.get("removed") or []:
+        print(f"  removed by the citation check: {x[:110]}")
+    for x in tr.get("citation_check") or []:
+        if not x["action"].split(": ")[-1].startswith("removed"):
+            print(f"  {x['action']} (score {x.get('score')}): {x['sentence'][:100]}")
+    print(f"  refusal reason: {st.get('refusal_reason')}")
     print(RESET, end="")
+
+
+LAST = Path(__file__).resolve().parent.parent / "data" / ".last_session"
+
+
+def session_command(q: str, sid: str) -> str | None:
+    """/history /profile /forget /sessions /resume <id> /new: returns the (possibly new) session id, or None."""
+    from app import memory
+    cmd, _, arg = q.partition(" ")
+    if cmd == "/new":
+        sid = memory.new_session()
+        print(f"{DIM}new conversation ({sid}){RESET}\n")
+    elif cmd == "/history":
+        for t in memory.turns(sid, 10):
+            who = "You" if t["role"] == "user" else "BIS"
+            print(f"{DIM}{t['turn_no']:>3} {who}: {' '.join(t['content'].split())[:150]}{RESET}")
+        print()
+    elif cmd == "/profile":
+        p = memory.profile(sid)
+        print(f"{DIM}{chr(10).join(f'  {k}: {v}' for k, v in p.items()) or '  (nothing remembered yet)'}{RESET}\n")
+    elif cmd == "/forget":
+        memory.forget(sid)
+        sid = memory.new_session()
+        print(f"{DIM}memory of that conversation deleted; new conversation ({sid}){RESET}\n")
+    elif cmd == "/sessions":
+        for x in memory.sessions():
+            print(f"{DIM}  {x['session_id']}  {x['updated']}  {x['turns']:>3} turns  {x['title']}{RESET}")
+        print()
+    elif cmd == "/resume" and arg:
+        sid = memory.ensure(arg.strip())
+        print(f"{DIM}resumed {sid} ({len(memory.turns(sid))} turns){RESET}\n")
+    else:
+        return None
+    return sid
 
 
 def main():
     use_api = "--api" in sys.argv
     if not use_api:
-        from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pipeline
+        from app import memory
     print(f"{BOLD}BIS Assistant{RESET} — answers from official BIS documents, with sources (English or हिन्दी).")
-    print(f"{DIM}{'API ' + API if use_api else 'local pipeline'} · commands: /trace  /new  /nocache  /quit{RESET}\n")
-    show_trace, use_cache, session, history = False, True, os.urandom(8).hex(), []
+    print(f"{DIM}{'API ' + API if use_api else 'local'} · commands: /trace /nocache /new /history /profile /forget "
+          f"/sessions /resume <id> /quit{RESET}")
+    show_trace, use_cache = False, True
+    session = LAST.read_text().strip() if LAST.exists() else ""
+    if not use_api:
+        session = memory.ensure(session or None)
+        n = len(memory.turns(session))
+        print(f"{DIM}{'resumed conversation ' + session + f' ({n} turns)' if n else 'new conversation ' + session}{RESET}\n")
+    session = session or os.urandom(6).hex()
     while True:
+        LAST.write_text(session)
         try:
             q = input(f"{CYAN}{BOLD}You › {RESET}").strip()
         except (EOFError, KeyboardInterrupt):
@@ -76,20 +127,22 @@ def main():
             continue
         if q in ("/quit", "/exit"):
             break
-        if q in ("/trace", "/new", "/nocache"):
-            if q == "/trace":
-                show_trace = not show_trace
-                print(f"{DIM}trace {'on' if show_trace else 'off'}{RESET}\n")
-            elif q == "/nocache":
-                use_cache = not use_cache
-                print(f"{DIM}answer cache {'on' if use_cache else 'off'}{RESET}\n")
-            else:
-                session, history = os.urandom(8).hex(), []
-                print(f"{DIM}new conversation{RESET}\n")
+        if q == "/trace":
+            show_trace = not show_trace
+            print(f"{DIM}trace {'on' if show_trace else 'off'}{RESET}\n")
             continue
+        if q == "/nocache":
+            use_cache = not use_cache
+            print(f"{DIM}answer cache {'on' if use_cache else 'off'}{RESET}\n")
+            continue
+        if q.startswith("/") and not use_api:
+            new = session_command(q, session)
+            if new:
+                session = new
+                continue
         print(f"{DIM}searching official BIS documents…{RESET}", end="", flush=True)
         try:
-            res = ask_api(q, session) if use_api else ask(q, history, use_cache=use_cache)
+            res = ask_api(q, session) if use_api else memory.chat(q, session, use_cache=use_cache)
         except KeyboardInterrupt:
             print(f"\r\033[K{DIM}(stopped){RESET}\n")
             continue
@@ -98,7 +151,8 @@ def main():
             continue
         print("\r\033[K", end="")
         print(f"{GREEN}{BOLD}BIS › {RESET}{res['answer']}")
-        footer = [res.get("provider", ""), f"{res['latency_ms'] / 1000:.1f} s",
+        footer = [(f"{RED}FALLBACK: {res['fallback']}{DIM}" if res.get("fallback") else res.get("provider", "")),
+                  f"{res['latency_ms'] / 1000:.1f} s",
                   f"{res.get('sources_used', 0)} source document(s)"]
         if res.get("cached"):
             footer.append("from cache")
@@ -106,9 +160,6 @@ def main():
         if show_trace:
             print_trace(res)
         print()
-        history += [{"role": "user", "content": q},
-                    {"role": "assistant", "content": res["answer"][:1500], "profile": res.get("profile")}]
-        history = history[-12:]  # last 6 turns
 
 
 if __name__ == "__main__":

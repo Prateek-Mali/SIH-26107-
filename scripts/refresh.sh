@@ -12,12 +12,14 @@ if [[ "${1:-}" == "--fresh" ]]; then
   rm -rf data/raw/html data/structured/*.csv
 fi
 
-echo "== 1/4 Download"
+echo "== 1/5 Download"
 "$PY" scripts/download.py --priority 2
-echo "== 2/4 Parse"
+echo "== 2/5 Parse"
 "$PY" scripts/parse.py
-echo "== 3/4 Chunk"
+echo "== 3/5 Chunk"
 "$PY" scripts/chunk.py
-echo "== 4/4 Index"
+echo "== 4/5 Index"
 "$PY" scripts/build_index.py
+echo "== 5/5 Domain vocabulary (related terms for query expansion)"
+"$PY" scripts/build_term_graph.py
 echo "== Done. Restart the API to load the new index."

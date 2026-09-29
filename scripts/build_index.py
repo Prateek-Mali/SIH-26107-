@@ -82,7 +82,7 @@ def embed_all(chunks: list[dict], cached_only: bool = False, core_only: bool = F
     print(f"Embeddings: {len(chunks) - len(todo)} cached, {len(todo)} to embed with {embed_model_id()}")
     CACHE.parent.mkdir(parents=True, exist_ok=True)
     with CACHE.open("a", encoding="utf-8") as out:
-        size = 8 if config.EMBED_PROVIDER == "ollama" else BATCH  # small batches keep local Ollama stable
+        size = 8 if config.EMBED_PROVIDER in ("local", "ollama") else BATCH  # local CPU: small batches
         for start in range(0, len(todo), size):
             batch = todo[start:start + size]
             try:
@@ -99,7 +99,7 @@ def embed_all(chunks: list[dict], cached_only: bool = False, core_only: bool = F
                 out.write(json.dumps({"key": keys[i], "vector": v}) + "\n")
             out.flush()
             print(f"  embedded {min(start + size, len(todo))}/{len(todo)}")
-            if config.EMBED_PROVIDER != "ollama":
+            if config.EMBED_PROVIDER not in ("local", "ollama"):
                 time.sleep(1)  # stay under free-tier rate limits
     return [cache.get(k) for k in keys]
 
@@ -148,7 +148,7 @@ def main():
     if args.bm25_only:
         return
     if config.EMBED_PROVIDER == "gemini" and not config.KEY_IS_SET:
-        sys.exit("GEMINI_API_KEY is not set in .env: cannot build Gemini embeddings (set EMBED_PROVIDER=ollama "
+        sys.exit("GEMINI_API_KEY is not set in .env: cannot build Gemini embeddings (set EMBED_PROVIDER=local "
                  "or use --bm25-only).")
     build_qdrant(chunks, embed_all(chunks, cached_only=args.cached_only, core_only=args.core_only))
 

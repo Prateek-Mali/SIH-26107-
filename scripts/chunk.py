@@ -58,16 +58,29 @@ def numbered_title(num: str, rest: str) -> str | None:
     return f"{num}. {title}"
 
 
-try:
-    import tiktoken
+_enc = None
 
-    _enc = tiktoken.get_encoding("cl100k_base")
 
-    def n_tokens(text: str) -> int:
-        return len(_enc.encode(text, disallowed_special=()))
-except Exception:  # offline fallback: rough estimate
-    def n_tokens(text: str) -> int:
-        return len(text) // 4
+def n_tokens(text: str) -> int:
+    """Loaded on first use, so importing this module (the app does, for row_text) never downloads anything."""
+    global _enc
+    if _enc is None:
+        import hashlib
+        import os
+        import tempfile
+        # tiktoken downloads its file on first use and can hang when the host is unreachable: use it only if cached
+        url = "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken"
+        cache = os.environ.get("TIKTOKEN_CACHE_DIR") or os.path.join(tempfile.gettempdir(), "data-gym-cache")
+        _enc = False
+        if os.path.exists(os.path.join(cache, hashlib.sha1(url.encode()).hexdigest())):
+            try:
+                import tiktoken
+                _enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                pass
+        if not _enc:
+            print("[chunk] tokenizer file not cached; estimating tokens as characters / 4")
+    return len(_enc.encode(text, disallowed_special=())) if _enc else len(text) // 4
 
 
 def split_structure(lines: list[tuple[int | None, str]], doc_type: str = "") -> list[dict]:

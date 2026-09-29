@@ -4,8 +4,10 @@
 
 Tools return small JSON; every chunk a tool returns gets a number n (a registry shared by all tools), and the model
 cites [n]. The final answer goes through the same citation check as the pipeline (app/answer.py).
-Providers: Groq (OpenAI-style tools) -> Gemini (function declarations). If a provider fails mid-loop, the work so
-far is handed to the next one as text. Limits: 6 tool calls, 45 s, older tool results trimmed to their best 3.
+Providers: the pinned ANSWER_PROVIDER first (Groq: OpenAI-style tools; Gemini: function declarations), temperature 0.
+If it fails mid-loop, the work so far is handed to the other one as text and the answer says "FALLBACK: <provider>".
+search_documents uses the same deterministic retrieve() as the pipeline (concept expansion, rerank, filters).
+Limits: 6 tool calls, 45 s, older tool results trimmed to their best 3.
 Set AGENT_MODE=off to use the old pipeline; any agent failure also falls back to it.
 """
 import json
@@ -69,6 +71,7 @@ HOW YOU WORK
 4. Answer. You have at most {MAX_TOOL_CALLS} tool calls.
 
 The numbered excerpts in the tool results are your CONTEXT: cite them as [n] using the "n" values.
+Intent: a simple "what is X / what does X mean / difference between X and Y" question is intent basic.
 
 """ + prompts.ANSWER
 
@@ -96,25 +99,15 @@ def _brief(reg: Registry, c: dict, focus: str, width: int = 600) -> dict:
 
 
 def t_search_documents(reg, query, scheme=None, doc_type=None, source=None, k=8):
-    from app.retrieval import _dedupe_key, bm25_search, rrf, vector_search_many
+    from app.retrieval import retrieve
     q = normalize(query)
-    fused = rrf(vector_search_many([q], 40)[0], bm25_search(q, None, 40))
-    out, seen = [], set()
-    for c in fused:
-        if scheme and c.get("scheme") not in (scheme, "general"):
-            continue
-        if doc_type and c.get("doc_type") != doc_type:
-            continue
-        if source and not c["source_id"].startswith(source):
-            continue
-        key = _dedupe_key(c)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(_brief(reg, c, q))
-        if len(out) >= min(int(k or 8), 10):
-            break
-    return {"results": out}
+    ret = retrieve(q, top_k=max(6, min(int(k or 8), 10)), with_neighbours=False,
+                   filters={"scheme": scheme, "doc_type": doc_type, "source": source})
+    t = ret["trace"]
+    return {"results": [_brief(reg, c, q) for c in ret["chunks"]],
+            "_stats": {"query": q, "filters": t["filters"], "concept_terms": t["concept_terms"],
+                       "count": len(ret["chunks"]), "max_rerank": t["max_rerank"], "search_empty": t["search_empty"],
+                       "top3": [[c["chunk_id"], c.get("rerank")] for c in ret["chunks"][:3]]}}
 
 
 def t_lookup_product(reg, text):
@@ -129,6 +122,7 @@ def t_lookup_product(reg, text):
         out.append({"n": n, "is_number": c["is_number"], "product": c["product_name"], "compulsory": c["compulsory"],
                     "scheme": c["scheme"], "qco": c["qco"]["title"][:160], "qco_so_number": c["qco"]["so_number"],
                     "qco_date": c["qco"]["date"], "confidence": c["confidence"],
+                    **({"when_it_applies": c["when_it_applies"]} if c.get("when_it_applies") else {}),
                     **({"deciding_factor": c["deciding_factor"]} if c.get("deciding_factor") else {})})
     return {"products": out, "note": "" if out else "no matching product in the BIS compulsory-certification lists"}
 
@@ -187,7 +181,7 @@ def run_tool(reg: Registry, name: str, args: dict) -> dict:
 
 # ---------------------------------------------------------------- providers (one step = one model call)
 def groq_step(messages: list[dict], allow_tools: bool) -> dict:
-    body = {"model": config.GROQ_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 3000}
+    body = {"model": config.GROQ_MODEL, "messages": messages, "temperature": 0.0, "max_tokens": 3000, "seed": llm.SEED}
     if "gpt-oss" in config.GROQ_MODEL:
         body["reasoning_effort"] = "low"
     if allow_tools:
@@ -219,7 +213,7 @@ def gemini_step(messages: list[dict], allow_tools: bool) -> dict:
     decls = [types.FunctionDeclaration(name=t["name"], description=t["description"], parameters=t["parameters"])
              for t in TOOLS]
     cfg = types.GenerateContentConfig(
-        system_instruction=messages[0]["content"], temperature=0.1, max_output_tokens=3000,
+        system_instruction=messages[0]["content"], temperature=0.0, max_output_tokens=3000, seed=llm.SEED,
         tools=[types.Tool(function_declarations=decls)] if allow_tools else None,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
     used = {}
@@ -238,6 +232,12 @@ def gemini_step(messages: list[dict], allow_tools: bool) -> dict:
 
 
 PROVIDERS = [("groq", groq_step, lambda: bool(config.GROQ_API_KEY)), ("gemini", gemini_step, lambda: config.KEY_IS_SET)]
+
+
+def _providers() -> list:
+    """The pinned answer provider first; the other one only as a (visible) fallback."""
+    first = llm.primary_label().split(":")[0]
+    return sorted([p for p in PROVIDERS if p[2]()], key=lambda p: p[0] != first)
 
 
 def _fallback_error(e: Exception) -> bool:
@@ -271,14 +271,28 @@ def _trim(messages: list[dict]):
 
 
 # ---------------------------------------------------------------- the loop
-def run_agent(question: str, history: list[dict] | None = None) -> dict:
+def run_agent(question: str, history: list[dict] | None = None, known: dict | None = None, lang: str = "en",
+              earlier: list[dict] | None = None) -> dict:
     t0 = time.time()
     reg, steps = Registry(), []
-    convo = "\n".join(f"{t['role']}: {t['content'][:400]}" for t in (history or [])[-6:])
-    user = (f"Earlier conversation:\n{convo}\n\n" if convo else "") + f"Question: {question}"
+    convo = "\n".join(f"{t['role']}: {t['content'][:600]}" for t in (history or [])[-7:])
+    back = [_brief(reg, c, question, 900) for c in (earlier or [])]
+    # every run starts from the same evidence: one deterministic search of the user's own words
+    first = t_search_documents(reg, question)
+    stats = first.pop("_stats")
+    steps.append({"step": "tool", "tool": "search_documents", "args": {"query": question}, "provider": "fixed first search",
+                  "returned": len(first["results"]), "error": None, "ms": 0, "search": stats})
+    from app.answer import known_line
+    user = ((f"Earlier conversation (for understanding only, never a source):\n{convo}\n\n" if convo else "")
+            + known_line(known)
+            + (f"Excerpts your earlier answer cited: {json.dumps(back, ensure_ascii=False)}\n\n" if back else "")
+            + f"Question: {question}\n" + ("Answer in Hindi.\n" if lang == "hi" else "") + "\n"
+            + ("Search results for the question as written (excerpts numbered n; search again only for parts they "
+               f"do not cover):\n{json.dumps(first, ensure_ascii=False)}" if first["results"]
+               else "A search for the question as written found nothing relevant in the BIS documents."))
     messages = [{"role": "system", "content": system_prompt()}, {"role": "user", "content": user}]
-    providers = [p for p in PROVIDERS if p[2]()]
-    calls, final, provider = 0, None, "none"
+    providers = _providers()
+    calls, final, provider, used = 0, None, "none", []
     while providers:
         name, step, _ = providers[0]
         out_of_budget = calls >= MAX_TOOL_CALLS or time.time() - t0 > MAX_SECONDS
@@ -295,6 +309,7 @@ def run_agent(question: str, history: list[dict] | None = None) -> dict:
             messages = _as_text_history(messages)
             continue
         provider = resp["provider"]
+        used.append(provider)
         if not resp["tool_calls"]:
             final = resp["content"]
             break
@@ -305,65 +320,95 @@ def run_agent(question: str, history: list[dict] | None = None) -> dict:
         for c in resp["tool_calls"]:
             t1 = time.time()
             result = run_tool(reg, c["name"], c["args"]) if calls < MAX_TOOL_CALLS else {"error": "tool budget used"}
+            stats = result.pop("_stats", None)
             calls += c["name"] in TOOL_FUNCS
             messages.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"],
                              "content": json.dumps(result, ensure_ascii=False)})
             steps.append({"step": "tool", "tool": c["name"], "args": c["args"], "provider": provider,
                           "returned": len(result.get("results") or result.get("products") or []),
-                          "error": result.get("error"), "ms": int((time.time() - t1) * 1000)})
+                          "error": result.get("error"), "ms": int((time.time() - t1) * 1000),
+                          **({"search": stats} if stats else {})})
         _trim(messages)
     if final is None:
-        raise llm.ProviderError("no provider could finish the agent loop: " + "; ".join(s.get("error", "") for s in steps))
+        raise llm.ProviderError("no provider could finish the agent loop: " + "; ".join(s.get("error") or "" for s in steps))
     return {"text": final, "registry": reg, "steps": steps, "tool_calls": calls, "provider": provider,
-            "ms": int((time.time() - t0) * 1000)}
+            "providers_used": used, "ms": int((time.time() - t0) * 1000)}
 
 
-def ask(question: str, history: list[dict] | None = None, use_cache: bool = True) -> dict:
+def ask(question: str, history: list[dict] | None = None, use_cache: bool = True, profile: dict | None = None) -> dict:
     from app import answer as A
+    from app.retrieval import retrieve
 
     if config.AGENT_MODE != "on":
-        return A.ask(question, history, use_cache)
+        return A.ask(question, history, use_cache, profile)
     t0 = time.time()
     q = normalize(question)
-    lang = detect_lang(q)
-    if A.GREETING.match(q):
-        return A._result(prompts.GREETING_HI if lang == "hi" else prompts.GREETING_EN, [], "none", t0, {"step": "greeting"})
-    key = A._cache_key(f"agent|{q}|{len(history or [])}")
-    if use_cache and not history and (hit := A._cache("get", key)):
+    lang = A.answer_language(question, q, profile)
+    if reply := A.smalltalk(q, lang):
+        return A._result(reply, [], "none", t0, {"step": "smalltalk", "stages": {"mode": "smalltalk"}})
+    u, rewritten = None, None
+    if history:  # a follow-up becomes a standalone question BEFORE any search
+        from app.understand import understand
+        u = understand(question, history, profile)
+        rewritten = u["standalone_question"]
+        q = rewritten
+    key = A._cache_key(f"agent|{q}|{lang}")
+    if use_cache and (hit := A._cache("get", key)):
         hit["cached"], hit["latency_ms"] = True, int((time.time() - t0) * 1000)
         return hit
+    earlier = A.earlier_chunks(question, history)
     try:
-        run = run_agent(q, history)
+        run = run_agent(q, history, profile, lang, earlier)
     except Exception as e:  # the demo never breaks: fall back to the pipeline
         print(f"[agent] falling back to the pipeline ({type(e).__name__}: {str(e)[:120]})")
-        res = A.ask(question, history, use_cache)
+        res = A.ask(question, history, use_cache, profile)
         res["trace"]["agent_fallback"] = f"{type(e).__name__}: {str(e)[:200]}"
+        res["trace"].setdefault("stages", {})["agent_fallback"] = res["trace"]["agent_fallback"]
         return res
-    chunks = run["registry"].chunks
-    trace = {"agent": {"steps": run["steps"], "tool_calls": run["tool_calls"], "ms": run["ms"]},
+    chunks, raw = run["registry"].chunks, run["text"]
+    searches = [s["search"] for s in run["steps"] if s.get("search")]
+    stages = {"mode": "agent", "understand_ok": (u or {}).get("understand_ok", "n/a (no conversation yet)"),
+              "intent": (u or {}).get("intent"), "rewritten_question": rewritten, "language": lang,
+              "reused_earlier_chunks": [c["chunk_id"] for c in earlier],
+              "sub_queries": [s["query"] for s in searches], "filters": [s["filters"] for s in searches],
+              "concept_terms": sorted({t for s in searches for t in s["concept_terms"]}),
+              "per_query": [{k: s[k] for k in ("query", "count", "top3")} for s in searches],
+              "tools": [s["tool"] for s in run["steps"] if s["step"] == "tool"],
+              "provider": None, "fallback": None}
+    if not chunks:
+        # the agent found or read nothing: decide from one deterministic search, never from the model alone
+        ret = retrieve(q)
+        stages["own_search"] = True
+        stages["per_query"] += [{k: v for k, v in pq.items()} for pq in ret["trace"]["per_query"]]
+        chunks = A.fit_budget(ret["chunks"], q)
+        max_rerank = ret["trace"]["max_rerank"]
+        raw = "NOT_COVERED"  # an answer written without excerpts cannot be grounded
+    else:
+        max_rerank = max((c.get("rerank") or 0.0 for c in chunks), default=0.0)
+        if max_rerank < A.RELEVANT_SCORE and not all("rerank" in c for c in chunks):
+            from app import rerank
+            max_rerank = max([max_rerank] + rerank.scores(q, [c["text"][:800] for c in chunks]))
+    stages.update(sent_to_llm=[c["chunk_id"] for c in chunks], max_rerank=round(max_rerank, 4),
+                  search_empty=not chunks)
+    trace = {"stages": stages, "understand": u, "agent": {"steps": run["steps"], "tool_calls": run["tool_calls"], "ms": run["ms"]},
              "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"], "section": (c.get("section") or "")[:80],
-                         "page": c.get("page"), "scheme": c.get("scheme")} for n, c in enumerate(chunks, start=1)]}
-    not_covered = prompts.NOT_COVERED_HI if lang == "hi" else prompts.NOT_COVERED_EN
-    body = A.normalize_markers(A.split_body_and_sources(A.clean_model_output(run["text"])))
-    if not chunks or body.strip().upper().startswith("NOT_COVERED") or not re.search(r"\[\d+\]", body):
-        trace["note"] = "model said NOT_COVERED" if body.strip().upper().startswith("NOT_COVERED") else "no cited answer"
-        res = A._result(not_covered, [], run["provider"], t0, trace, refused=True)
+                         "page": c.get("page"), "scheme": c.get("scheme"), "rerank": c.get("rerank")}
+                        for n, c in enumerate(chunks, start=1)]}
+    if not chunks:
+        stages["refusal_reason"] = "search_empty"
+        trace["note"] = "search_empty"
+        res = A._result(prompts.NOT_COVERED_HI if lang == "hi" else prompts.NOT_COVERED_EN, [], run["provider"], t0,
+                        trace, refused=True, fallback=A._fallback(run["providers_used"]))
+        stages["provider"], stages["fallback"] = res["provider"], res["fallback"]
         A._cache("put", key, res)
         return res
-    body = A.merge_duplicate_citations(body, chunks)
-    t_ver = time.time()
-    try:
-        body, removed, n_checked = A.verify_citations(body, chunks, lang)
-    except Exception as e:
-        removed, n_checked = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
-    trace.update(citation_check=removed, claims_checked=n_checked, verify_ms=int((time.time() - t_ver) * 1000))
-    body = A.tidy(A.merge_duplicate_citations(body, chunks))
-    if not re.search(r"\[\d+\]", body):
-        trace["note"] = "citation check removed every sentence"
-        return A._result(not_covered, [], run["provider"], t0, trace, refused=True)
-    if not re.search(r"(?im)^\W*next step\s*:", body):
-        body += "\n\n" + A.default_next_step({"standalone_question": q}, lang)
-    text, citations = A.finalize(body, chunks, lang)
-    res = A._result(text, citations, run["provider"], t0, trace)
-    A._cache("put", key, res)
+
+    def regen(sub: list[dict], extra: str):
+        return A.generate(A.answer_prompt(q, sub, lang, known=profile) + extra)
+
+    res = A.ground(question, q, lang, chunks, raw, run["provider"], regen, stages, max_rerank, None, t0, trace)
+    res["fallback"] = res["fallback"] or A._fallback(run["providers_used"])
+    stages["provider"], stages["fallback"] = res["provider"], res["fallback"]
+    if not res["fallback"]:
+        A._cache("put", key, res)
     return res

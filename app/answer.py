@@ -1,9 +1,12 @@
-"""The answer pipeline: one knowledge base, at most one LLM call per question.
+"""The answer pipeline: one knowledge base, deterministic retrieval, one answer model per run.
 
-    ask(question, history=None) -> {answer, citations, sources_used, provider, latency_ms, trace}
+    ask(question, history=None) -> {answer, citations, sources_used, provider, fallback, latency_ms, trace}
 
-question -> normalize -> retrieve (rule expansions, hybrid, scheme filter, rerank, neighbours)
-         -> generate (1 LLM call) -> citation cleanup -> local citation check -> answer + sources
+question -> understand (JSON + schema, or rules) -> retrieve (concept expansion, hybrid, rerank, neighbours)
+         -> refuse only if search_empty -> generate -> citation check -> answer + sources
+Second chances (each at most once): the model says NOT_COVERED although the excerpts score high -> ask again;
+the citation check would remove > 40% of the sentences -> regenerate from only the supporting excerpts.
+trace["stages"] shows every step (the CLI's /trace).
 """
 import hashlib
 import json
@@ -16,9 +19,28 @@ from app.expand import detect_lang, normalize
 from app.retrieval import retrieve
 from app.understand import understand
 
-GREETING = re.compile(r"^\s*(hi+|hello|hey|namaste|namaskar|नमस्ते|नमस्कार|good (morning|afternoon|evening)|"
-                      r"thanks?( you)?|thank you|धन्यवाद|ok(ay)?|bye)[\s!.?]*$", re.I)
+GREETING = re.compile(r"^\s*(hi+|hello|hey|namaste|namaskar|नमस्ते|नमस्कार|good (morning|afternoon|evening))[\s!.?]*$", re.I)
+SMALLTALK = [  # (pattern, key in prompts.SMALLTALK): fixed replies, no search, never a refusal
+    (re.compile(r"^\s*(thanks?( you)?( so much)?|thank you|thx|ty|धन्यवाद|शुक्रिया|ok(ay)?( thanks?)?)[\s!.?]*$", re.I), "thanks"),
+    (re.compile(r"^\s*(bye|goodbye|see you|अलविदा)[\s!.?]*$", re.I), "bye"),
+    (re.compile(r"^\s*(who (made|built|created|are) you|are you (chat ?gpt|gpt|a bot|an ai|human)|what are you|"
+                r"तुम कौन हो|आप कौन हैं)\W*(\s*/\s*(who (made|built|created|are) you|are you (chat ?gpt|gpt|a bot))\W*)*$", re.I), "who"),
+    (re.compile(r"^\s*(what can you do|how can you help( me)?|what do you do|help|आप क्या कर सकते हैं)[\s!.?]*$", re.I), "can"),
+]
+
+
+def smalltalk(q: str, lang: str) -> str | None:
+    """Greetings and small talk get a fixed reply (no search, no model)."""
+    if GREETING.match(q):
+        return prompts.GREETING_HI if lang == "hi" else prompts.GREETING_EN
+    for pat, key in SMALLTALK:
+        if pat.match(q):
+            return prompts.SMALLTALK[key][lang == "hi"]
+    return None
 SUPPORT_THRESHOLD = 0.3   # reranker probability that a cited excerpt supports a sentence
+RELEVANT_SCORE = 0.5      # a NOT_COVERED reply is re-asked once when the best excerpt scores at least this
+MAX_REMOVED = 0.4         # the citation check removing more than this share of sentences -> regenerate once
+MIN_CHUNKS = 6            # never send fewer excerpts than this to the model (when retrieval found any)
 CACHE_PATH = config.ROOT / "index" / "answer_cache.sqlite"
 
 
@@ -29,7 +51,8 @@ def _index_version() -> str:
 
 
 def _cache_key(q: str) -> str:
-    return hashlib.sha256(f"{q.lower().strip()}|{_index_version()}|{config.GEMINI_MODEL}".encode()).hexdigest()
+    """question + index version + the answer model of this run."""
+    return hashlib.sha256(f"{q.lower().strip()}|{_index_version()}|{llm.primary_label()}".encode()).hexdigest()
 
 
 def _cache(op: str, key: str, value: dict | None = None):
@@ -79,17 +102,22 @@ def is_product_question(q: str, u: dict) -> bool:
     return u.get("intent") in ("check_requirement", "advice") and bool((u.get("product_attrs") or {}).get("product_type"))
 
 
-def fit_budget(chunks: list[dict], question: str, budget: int = CONTEXT_CHARS) -> list[dict]:
+def fit_budget(chunks: list[dict], question: str, budget: int = CONTEXT_CHARS, min_chunks: int = MIN_CHUNKS) -> list[dict]:
     """Keep excerpts in rank order until the context budget is used; long excerpts are cut to the
-    part most similar to the question (best_window)."""
-    out, used = [], 0
-    for c in chunks:
-        text = c["text"] if len(c["text"]) <= EXCERPT_CHARS else best_window(question, c["text"], EXCERPT_CHARS)
-        if out and used + len(text) > budget:
-            break
-        out.append({**c, "text": text})
-        used += len(text)
-    return out
+    part most similar to the question (best_window). Never fewer than min_chunks: if they do not fit,
+    every excerpt is cut shorter."""
+    size = EXCERPT_CHARS
+    while True:
+        out, used = [], 0
+        for c in chunks:
+            text = c["text"] if len(c["text"]) <= size else best_window(question, c["text"], size)
+            if out and used + len(text) > budget:
+                break
+            out.append({**c, "text": text})
+            used += len(text)
+        if len(out) >= min(min_chunks, len(chunks)) or size <= 300:
+            return out
+        size = max(300, budget // min(min_chunks, len(chunks)))
 
 
 def format_context(chunks: list[dict]) -> str:
@@ -228,8 +256,29 @@ def needs_citation(unit: str, claim: str) -> bool:
     return True
 
 
+def drop_empty_tables(text: str) -> str:
+    """A markdown table left with a header but no rows (e.g. after the citation check) is removed."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        if lines[i].lstrip().startswith("|"):
+            j = i
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                j += 1
+            block = lines[i:j]
+            rows = [l for l in block[1:] if not re.match(r"^\s*\|?\s*:?-{3,}", l)]
+            has_data = any(re.sub(r"[|\s\-–—:]|\[\d+\]|n/?a", "", r, flags=re.I) for r in rows)
+            if has_data:
+                out += block
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
 def tidy(text: str) -> str:
-    """After removals: drop headings with nothing under them, stray markers like [8.1], renumber lists."""
+    """After removals: drop empty tables, headings with nothing under them, stray markers like [8.1], renumber lists."""
+    text = drop_empty_tables(text)
     text = re.sub(r"\s*\[\d+\.\d+\]", "", text)
     text = re.sub(r"(\[\d+\])\s*\((?:[ivx]+|[a-z])\)", r"\1", text)  # "[3] (d)" clause leftovers
     lines = text.split("\n")
@@ -242,6 +291,21 @@ def tidy(text: str) -> str:
                 continue
         out.append(line)
     return renumber_lists(re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip())
+
+
+def evidence(c: dict) -> str:
+    """What a citation of this excerpt may rely on: the whole stored chunk (the prompt may hold only a window of it)
+    plus its neighbouring chunks, so a rule split across a chunk boundary still counts as supported."""
+    from app.retrieval import _store, neighbours
+    try:
+        full = _store()[0].get(c["chunk_id"])
+    except Exception:  # no index (tests): the excerpt itself
+        full = None
+    if not full or " ".join(c["text"].split())[:200] not in " ".join(full["text"].split()):
+        return c["text"]  # unknown id, or the id does not hold this excerpt
+    nb = neighbours(full)
+    return " ".join([n["text"] for n in nb[:1] if n["chunk_id"] < full["chunk_id"]] + [full["text"]]
+                    + [n["text"] for n in nb if n["chunk_id"] > full["chunk_id"]])
 
 
 def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str, list[dict]]:
@@ -270,9 +334,11 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
                 claims.append((li, ui, claim, []))
     is_row = {c: lines[li].lstrip().startswith("|") for li, _, c, _ in claims}
     # pass 1: each claim against the excerpts it cites
+    ev = [evidence(c) for c in chunks]
+
     def full(n: int) -> str:  # title and section count too ("BIS Act, 2016", "Section 29(3)")
         c = chunks[n - 1]
-        return f"{c['title']} {c.get('section', '')} {c['text']}"
+        return f"{c['title']} {c.get('section', '')} {ev[n - 1]}"
 
     stop = {"the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "with", "is", "are", "be", "by", "from",
             "your", "you", "if", "as", "at", "this", "that", "its", "it", "any", "within", "under"}
@@ -293,20 +359,20 @@ def verify_citations(text: str, chunks: list[dict], language: str) -> tuple[str,
             return max(score, 0.5)
         return score
 
-    pairs = [(c, best_window(c, chunks[n - 1]["text"])) for _, _, c, cited in claims for n in cited]
+    pairs = [(c, best_window(c, ev[n - 1])) for _, _, c, cited in claims for n in cited]
     it = iter(rerank.pair_scores(pairs))
     first = [[(n, support(c, cited, n, next(it))) for n in cited] for _, _, c, cited in claims]
     # pass 2: unsupported claims against every other excerpt
     failing = [i for i, sc in enumerate(first) if not any(s >= SUPPORT_THRESHOLD for _, s in sc)]
     # only excerpts that contain the claim's numbers are worth scoring (keeps the CPU cost low)
     def overlap(claim: str, n: int) -> int:
-        return len(set(_WORD.findall(claim.lower())) & set(_WORD.findall(chunks[n - 1]["text"].lower())))
+        return len(set(_WORD.findall(claim.lower())) & set(_WORD.findall(ev[n - 1].lower())))
 
     candidates = {i: sorted((n for n in range(1, len(chunks) + 1)
                              if n not in claims[i][3] and numbers_ok(claims[i][2], full(n))),
                             key=lambda n, c=claims[i][2]: -overlap(c, n))[:6]  # the 6 most similar excerpts
                   for i in failing}
-    alt_pairs = [(claims[i][2], best_window(claims[i][2], chunks[n - 1]["text"])) for i in failing for n in candidates[i]]
+    alt_pairs = [(claims[i][2], best_window(claims[i][2], ev[n - 1])) for i in failing for n in candidates[i]]
     it2 = iter(rerank.pair_scores(alt_pairs))
     best_alt = {i: max(((support(claims[i][2], [n], n, next(it2)), n) for n in candidates[i]), default=(0.0, None))
                 for i in failing}
@@ -405,38 +471,158 @@ def log_refusal(question, provider, reason, raw, chunks, removed=None):
 
 
 # ---------------------------------------------------------------- main entry
-def default_next_step(u: dict, lang: str) -> str:
-    """A 'Next step:' line with only an official link (no facts), used when the model left it out."""
-    role, text = u.get("user_role"), (u.get("standalone_question") or "").lower()
-    if role in ("consumer",) or "complain" in text or "huid" in text:
-        step = "check the product or HUID in the BIS CARE app (https://play.google.com/store/apps/details?id=com.bis.bisapp) and file a complaint if needed (https://www.bis.gov.in/consumer-overview/online-complaint-registration/?lang=en)"
-    elif re.search(r"\bcrs\b|electronic|led|mobile|charger|registration scheme", text):
-        step = "open the CRS portal (https://www.crsbis.in/BIS/registration-page.do) and start your registration"
-    elif role in ("manufacturer", "importer", "foreign_manufacturer") or "licen" in text:
-        step = "create your account on Manak Online (https://www.manakonline.in/) and start your application"
-    else:
-        step = "read the official page on the BIS website (https://www.bis.gov.in)"
-    return ("**अगला कदम:** " if lang == "hi" else "**Next step:** ") + step + "."
-
-
-def _result(answer, citations, provider, t0, trace, refused=False, cached=False):
+def _result(answer, citations, provider, t0, trace, refused=False, cached=False, fallback=None):
     u = trace.get("understand") or {}
     profile = {k: u[k] for k in ("user_role", "product_or_topic", "user_goal") if k in u}
     return {"answer": answer, "citations": citations, "sources_used": len({c["source_id"] for c in citations}),
-            "provider": provider, "latency_ms": int((time.time() - t0) * 1000), "refused": refused,
-            "cached": cached, "trace": trace, "profile": profile}  # the profile is kept even on "not covered"
+            "provider": provider, "fallback": fallback, "latency_ms": int((time.time() - t0) * 1000),
+            "refused": refused, "cached": cached, "trace": trace, "profile": profile}  # profile kept even on "not covered"
 
 
-def ask(question: str, history: list[dict] | None = None, use_cache: bool = True) -> dict:
-    """history: earlier turns [{role, content, profile?}]; the last assistant turn's profile is remembered."""
+RETRY_RELEVANT = ("\n\nThe excerpts are relevant: answer from them. Reply NOT_COVERED only if the question is not "
+                  "about BIS at all.")
+ONLY_SUPPORTING = ("\n\nWrite the answer again using ONLY these excerpts. State only what they say, each fact with its "
+                   "[n]; for anything they do not cover write \"Not covered in my documents: <that part>\".")
+
+
+def known_line(known: dict | None) -> str:
+    known = {k: v for k, v in (known or {}).items() if v and k != "language"}
+    return ("KNOWN ABOUT THE USER (from this conversation; use it to personalise, e.g. \"For your steel bottles under "
+            f"IS 17803...\"; it is NOT a source): {json.dumps(known, ensure_ascii=False)}\n" if known else "")
+
+
+def answer_prompt(q: str, chunks: list[dict], lang: str, u: dict | None = None, search_q: str = "",
+                  tools_block: str = "", known: dict | None = None) -> str:
+    u = u or {}
+    return (f"CONTEXT:\n{format_context(chunks)}\n\n" + known_line(known)
+            + (f"USER: role = {u.get('user_role', 'unknown')}; goal = {u.get('user_goal') or 'not stated'}; "
+               f"product/topic = {u.get('product_or_topic') or 'not stated'}\nINTENT: {u.get('intent')}\n" if u else "")
+            + (f"\n{tools_block}\nANSWER LAYOUT: product\n\n" if tools_block else "")
+            + f"QUESTION ({'Hindi' if lang == 'hi' else 'English'}): {q}"
+            + (f"\n(Meaning, with the earlier conversation: {search_q})" if search_q and search_q.lower() != q.lower() else ""))
+
+
+def generate(prompt: str) -> tuple[str, str]:
+    """One answer-model call (temperature 0: the same excerpts give the same answer)."""
+    return llm.generate_with_provider(prompt, system=prompts.ANSWER, temperature=0.0, max_tokens=4096)
+
+
+def said_not_covered(body: str) -> bool:
+    return body.strip().upper().startswith("NOT_COVERED") or not re.search(r"\[\d+\]", body)
+
+
+def ground(question: str, q: str, lang: str, chunks: list[dict], raw: str, provider: str, regen, stages: dict,
+           max_rerank: float, u: dict | None, t0: float, trace: dict) -> dict:
+    """Shared by the pipeline and the agent: model reply -> (retry once if NOT_COVERED on relevant excerpts)
+    -> citation check -> (regenerate once from the supporting excerpts if > 40% removed) -> answer or refusal.
+    regen(chunks, extra_instruction) -> (raw, provider) makes one more answer-model call."""
+    providers = [provider]
+    not_covered = prompts.NOT_COVERED_HI if lang == "hi" else prompts.NOT_COVERED_EN
+
+    def refuse(reason: str, removed=None):
+        stages["refusal_reason"] = reason
+        trace["note"] = reason
+        trace["raw_output"] = (raw or "")[:3000]
+        log_refusal(question, providers[-1], reason, raw, chunks, removed)
+        return _result(not_covered, [], providers[-1], t0, trace, refused=True, fallback=_fallback(providers))
+
+    body = normalize_markers(split_body_and_sources(clean_model_output(raw)))
+    stages["model_not_covered"] = said_not_covered(body)
+    stages["retried_not_covered"] = False
+    if stages["model_not_covered"] and max_rerank >= RELEVANT_SCORE:
+        raw, prov = regen(chunks, RETRY_RELEVANT)
+        providers.append(prov)
+        body = normalize_markers(split_body_and_sources(clean_model_output(raw)))
+        stages["retried_not_covered"] = True
+        stages["model_not_covered_after_retry"] = said_not_covered(body)
+    if said_not_covered(body):
+        return refuse("model_not_covered")
+
+    body = merge_duplicate_citations(body, chunks)
+    t_ver = time.time()
+    body, removed, n_checked = _check(body, chunks, lang)
+    n_removed = sum(x["action"].startswith("removed") for x in removed)
+    stages["regenerated"] = False
+    if n_checked and n_removed / n_checked > MAX_REMOVED:
+        keep = sorted({int(n) for n in re.findall(r"\[(\d+)\]", body) if 1 <= int(n) <= len(chunks)})
+        if keep:
+            sub = [chunks[n - 1] for n in keep]
+            raw2, prov = regen(sub, ONLY_SUPPORTING)
+            providers.append(prov)
+            body2 = normalize_markers(split_body_and_sources(clean_model_output(raw2)))
+            stages["regenerated"] = {"why": f"citation check removed {n_removed}/{n_checked} sentences",
+                                     "kept_chunks": [c["chunk_id"] for c in sub]}
+            if not said_not_covered(body2):
+                body2, removed2, n2 = _check(merge_duplicate_citations(body2, sub), sub, lang)
+                if re.search(r"\[\d+\]", body2):
+                    raw, body, chunks, n_checked = raw2, body2, sub, n2
+                    removed = removed + [{**x, "action": "after regenerate: " + x["action"]} for x in removed2]
+    stages["removed"] = [x["sentence"] for x in removed if x["action"].split(": ")[-1].startswith("removed")]
+    trace.update(citation_check=removed, claims_checked=n_checked, verify_ms=int((time.time() - t_ver) * 1000))
+    body = tidy(merge_duplicate_citations(body, chunks))
+    if not re.search(r"\[\d+\]", body):
+        return refuse("check_removed_all", removed)
+    answer, citations = finalize(body, chunks, lang)
+    stages["refusal_reason"] = None
+    return _result(answer, citations, providers[-1], t0, trace, fallback=_fallback(providers))
+
+
+def _check(body: str, chunks: list[dict], lang: str):
+    try:
+        return verify_citations(body, chunks, lang)
+    except Exception as e:  # never lose an answer because the checker failed; say so in the trace
+        return body, [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
+
+
+def _fallback(providers: list[str]) -> str | None:
+    """The provider label to show as 'FALLBACK: ...' if any call of this answer did not use the pinned model."""
+    return next((f for f in (llm.fallback_of(p) for p in providers) if f), None)
+
+
+def retrieval_stages(ret_trace: dict, sent: list[dict]) -> dict:
+    return {"sub_queries": ret_trace.get("queries", []), "filters": ret_trace.get("filters", {}),
+            "concept_terms": ret_trace.get("concept_terms", []), "per_query": ret_trace.get("per_query", []),
+            "max_rerank": ret_trace.get("max_rerank"), "search_empty": ret_trace.get("search_empty", False),
+            "sent_to_llm": [c["chunk_id"] for c in sent]}
+
+
+REFERS_BACK = re.compile(r"\b((earlier|previous|above|last|your) (answer|reply|point|step|list)|step \d+|"
+                         r"(that|this|those|the same) (document|standard|rule|step|one|answer|time|deadline)|"
+                         r"the (first|second|third|last|\d+(st|nd|rd|th)) (standard|one|step|document|point)|"
+                         r"you (mentioned|said|told)|the same|same in)\b", re.I)
+
+
+def answer_language(question: str, q: str, profile: dict | None) -> str:
+    """Asked for in this message ('in Hindi please') > written in Devanagari > English. One request = one answer."""
+    ql = question.lower()
+    if re.search(r"\b(in|into) hindi\b|हिंदी में|हिन्दी में", ql):
+        return "hi"
+    if re.search(r"\b(in|into) english\b", ql):
+        return "en"
+    return "hi" if detect_lang(q) == "hi" else "en"
+
+
+def earlier_chunks(question: str, history: list[dict] | None) -> list[dict]:
+    """'step 2 of your earlier answer', 'that document': the excerpts the last answer cited go back into the context."""
+    if not history or not REFERS_BACK.search(question):
+        return []
+    from app.retrieval import _store
+    by_id = _store()[0]
+    last = next((t for t in reversed(history) if t["role"] == "assistant" and t.get("citations")), None)
+    return [by_id[c] for c in (last or {}).get("citations", [])[:6] if c in by_id]
+
+
+def ask(question: str, history: list[dict] | None = None, use_cache: bool = True, profile: dict | None = None) -> dict:
+    """history: earlier turns [{role, content, citations?}] (app/memory.py); profile: what the session knows."""
     t0 = time.time()
     q = normalize(question)
-    lang = detect_lang(q)
-    if GREETING.match(q):
-        return _result(prompts.GREETING_HI if lang == "hi" else prompts.GREETING_EN, [], "none", t0, {"step": "greeting"})
+    lang = answer_language(question, q, profile)
+    if reply := smalltalk(q, lang):
+        return _result(reply, [], "none", t0, {"step": "smalltalk", "stages": {"mode": "smalltalk"}})
 
-    # step 1: understand the user (small, fast model): intent, role, goal, standalone question
-    prev = next((t["profile"] for t in reversed(history or []) if t.get("profile")), {})
+    # step 1: understand the user (small model, JSON + schema; rules if it fails twice); a follow-up is rewritten
+    # into a standalone question from the conversation and profile BEFORE searching
+    prev = profile or next((t["profile"] for t in reversed(history or []) if t.get("profile")), {})
     t_u = time.time()
     u = understand(question, history, prev)
     profile = {k: u[k] for k in ("user_role", "product_or_topic", "user_goal")}
@@ -446,9 +632,15 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
         hit["cached"], hit["latency_ms"] = True, int((time.time() - t0) * 1000)
         return hit
 
-    ret = retrieve(search_q, extra_queries=u["sub_questions"], intent=u["intent"])
+    # retrieval searches the user's own words (deterministic); with a conversation, the standalone rewrite
+    retrieval_q = search_q if history else q
+    ret = retrieve(retrieval_q, intent=u["intent"])
+    back = earlier_chunks(question, history)
+    if back:
+        have = {c["chunk_id"] for c in back}
+        ret["chunks"] = back + [c for c in ret["chunks"] if c["chunk_id"] not in have]
     tools_block, tool_trace = "", None
-    if is_product_question(q, u):
+    if ret["chunks"] and is_product_question(q, u):
         # Standard Recommender + Scheme Selector: their evidence (product rows, rule proofs) comes first in the context
         from app.recommender import recommend_standards, select_scheme, tool_context
         t_tools = time.time()
@@ -466,55 +658,33 @@ def ask(question: str, history: list[dict] | None = None, use_cache: bool = True
                       "profile": sch["profile"], "ms": int((time.time() - t_tools) * 1000)}
     else:
         chunks = fit_budget(ret["chunks"], search_q)
-    trace = {"understand": {**u, "ms": int((time.time() - t_u) * 1000) - ret["trace"]["ms"]},
+    stages = {"mode": "pipeline", "understand_ok": u.get("understand_ok"), "understand_attempts": u.get("attempts"),
+              "intent": u["intent"], "rewritten_question": search_q if history else None,
+              "reused_earlier_chunks": [c["chunk_id"] for c in back], "language": lang, **retrieval_stages(ret["trace"], chunks), "provider": None, "fallback": None}
+    trace = {"stages": stages, "understand": {**u, "ms": int((time.time() - t_u) * 1000) - ret["trace"]["ms"]},
              "retrieval": ret["trace"], "tools": tool_trace,
              "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"], "section": c.get("section", "")[:80],
                          "scheme": c.get("scheme"), "page": c.get("page"), "rerank": c.get("rerank"),
                          "neighbour_of": c.get("neighbour_of")} for n, c in enumerate(chunks, start=1)]}
-    not_covered = prompts.NOT_COVERED_HI if lang == "hi" else prompts.NOT_COVERED_EN
-    if not chunks:
-        return _result(not_covered, [], "none", t0, trace, refused=True)
-
-    prompt = (f"CONTEXT:\n{format_context(chunks)}\n\n"
-              f"USER: role = {u['user_role']}; goal = {u['user_goal'] or 'not stated'}; "
-              f"product/topic = {u['product_or_topic'] or 'not stated'}\n"
-              f"INTENT: {u['intent']}\n"
-              + (f"\n{tools_block}\nANSWER LAYOUT: product\n\n" if tools_block else "")
-              + f"QUESTION ({'Hindi' if lang == 'hi' else 'English'}): {q}"
-              + (f"\n(Meaning, with the earlier conversation: {search_q})" if search_q.lower() != q.lower() else ""))
-    t_gen = time.time()
-    raw, provider = llm.generate_with_provider(prompt, system=prompts.ANSWER, temperature=0.1, max_tokens=4096)
-    trace["generate_ms"] = int((time.time() - t_gen) * 1000)
-    body = normalize_markers(split_body_and_sources(clean_model_output(raw)))
-    if body.strip().upper().startswith("NOT_COVERED") or not re.search(r"\[\d+\]", body):
-        trace["note"] = ("model said NOT_COVERED" if body.strip().upper().startswith("NOT_COVERED")
-                         else "empty answer" if not body.strip() else "answer had no [n] citations")
-        trace["raw_output"] = (raw or "")[:3000]
-        log_refusal(question, provider, trace["note"], raw, chunks)
-        res = _result(not_covered, [], provider, t0, trace, refused=True)
+    if not chunks:  # the ONLY refusal before the model: retrieval found nothing about the question
+        stages["refusal_reason"] = "search_empty"
+        trace["note"] = "search_empty"
+        not_covered = prompts.NOT_COVERED_HI if lang == "hi" else prompts.NOT_COVERED_EN
+        res = _result(not_covered, [], "none", t0, trace, refused=True)
         _cache("put", key, res)
         return res
 
-    body = merge_duplicate_citations(normalize_markers(body), chunks)
-    t_ver = time.time()
-    try:
-        body, removed, n_checked = verify_citations(body, chunks, lang)
-    except Exception as e:  # never lose an answer because the checker failed; say so in the trace
-        removed, n_checked = [{"sentence": "", "action": f"citation check skipped: {type(e).__name__}: {e}"}], 0
-    trace["claims_checked"] = n_checked
-    body = merge_duplicate_citations(body, chunks)  # re-citing can point two numbers at the same page again
-    body = tidy(body)
-    trace["verify_ms"] = int((time.time() - t_ver) * 1000)
-    trace["citation_check"] = removed
-    if not re.search(r"\[\d+\]", body):
-        trace["note"] = "citation check removed every sentence"
-        log_refusal(question, provider, trace["note"], raw, chunks, removed)
-        res = _result(not_covered, [], provider, t0, trace, refused=True)
-        return res
-    if not re.search(r"(?im)^\W*next step\s*:", body):
-        body += "\n\n" + default_next_step(u, lang)
-    answer, citations = finalize(body, chunks, lang)
-    res = _result(answer, citations, provider, t0, trace)
-    res["profile"] = profile
-    _cache("put", key, res)
+    def regen(sub: list[dict], extra: str):
+        return generate(answer_prompt(q, sub, lang, u, search_q, tools_block if sub is chunks else "", prev) + extra)
+
+    t_gen = time.time()
+    raw, provider = generate(answer_prompt(q, chunks, lang, u, search_q, tools_block, prev))
+    trace["generate_ms"] = int((time.time() - t_gen) * 1000)
+    res = ground(question, q, lang, chunks, raw, provider, regen, stages, ret["trace"].get("max_rerank", 0.0),
+                 u, t0, trace)
+    stages["provider"], stages["fallback"] = res["provider"], res["fallback"]
+    if not res["refused"]:
+        res["profile"] = profile
+    if not res["fallback"]:  # an answer from a fallback model is not cached (the next run should use the pinned one)
+        _cache("put", key, res)
     return res

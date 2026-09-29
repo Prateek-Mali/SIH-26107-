@@ -15,9 +15,9 @@ Why RAG, not fine-tuning: rules change often (new QCOs and amendments every mont
 |---|---|
 | Language | Python 3.11+ |
 | LLM | Google Gemini via `google-genai` SDK. `GEMINI_MODEL` then `GEMINI_MODEL_FALLBACKS` (quota is per model; each model is tried on every key in `GEMINI_API_KEY`, `GEMINI_API_KEY_2`). Flash-Lite (`GEMINI_ROUTER_MODEL`) for cheap calls (Hindi→English query, eval judge). On import, `app/config.py` prints the available Flash models. |
-| Fallback LLM | Groq (`GROQ_API_KEY`, `GROQ_MODEL`), then local Ollama (`OLLAMA_MODEL=qwen2.5:7b`). No waiting on 429: move to the next provider. |
+| Fallback LLM | `ANSWER_PROVIDER` (gemini) is the one answer model per run; Groq (`GROQ_API_KEY`, `GROQ_MODEL`) only as a visible `FALLBACK:`. No Ollama (owner, Task 12). No waiting on 429. |
 | Pipeline | Single knowledge base, linear pipeline in `app/answer.py` (the old LangGraph multi-agent graph is in `app/agents_old/`, not used; owner approved in Task 1/2) |
-| Embeddings | Local `bge-m3` via Ollama (`EMBED_PROVIDER=ollama`), 1024 dims; Gemini embeddings still supported (`EMBED_PROVIDER=gemini`, 1000/day free) |
+| Embeddings | `bge-m3` run in-process via fastembed ONNX (`EMBED_PROVIDER=local`, model in `index/models`), 1024 dims, same vectors as the old Ollama bge-m3. No Ollama app. |
 | Reranker | Local ONNX cross-encoder via `fastembed` (`RERANK_MODEL`, default `Xenova/ms-marco-MiniLM-L-12-v2`; Intel Mac, no PyTorch) |
 | Vector DB | Qdrant in **local embedded mode** (`QdrantClient(path="index/qdrant")`), no server needed |
 | Keyword search | `rank_bm25` (exact IS numbers such as "IS 1293" must match) |

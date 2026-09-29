@@ -162,6 +162,10 @@ def recommend_standards(description: str, attrs: dict | None = None, k: int = 5)
     # final = reranker + word coverage: the reranker alone prefers a related product over the named one
     # ("sulphate resisting cement" -> super sulphated cement) and drops plain matches ("wooden toy" -> toys)
     final = {i: s + coverage(i) for i, s in zip(cands, scores)}
+    if attrs.get("electrical") is False:  # a non-electrical product is not an electrical one ("toy" vs "electric toys")
+        for i in cands:
+            if re.search(r"\belectric", " ".join([rows[i]["product_name"]] + rows[i]["syn"]).lower()):
+                final[i] -= 0.5
     ranked = sorted(cands, key=lambda i: (i not in strong, -final[i]))
     out, seen = [], set()
     for i in ranked:
@@ -188,7 +192,37 @@ def recommend_standards(description: str, attrs: dict | None = None, k: int = 5)
                 a, b = _words(best["is_title"]) - _words(c["is_title"]), _words(c["is_title"]) - _words(best["is_title"])
                 c["deciding_factor"] = (f"{best['is_number']} is for: {', '.join(sorted(a)) or '-'}; "
                                         f"{c['is_number']} is for: {', '.join(sorted(b)) or '-'}")
+    for c, when in zip(out, when_it_applies(out)):
+        if when:
+            c["when_it_applies"] = when
     return {"candidates": out, "attrs": attrs, "ms": int((time.time() - t0) * 1000)}
+
+
+def qco_scope(qco_title: str) -> str:
+    """'Insulated Flask, Bottles and Containers for Domestic Use (Quality Control) Order, 2023 ...' -> the product
+    group the QCO covers."""
+    m = re.match(r"\s*(?:\d+\.\s*)?(.+?)\s*\(\s*Quality\s*Control\s*\)", qco_title or "", re.I)
+    return m.group(1).strip() if m else ""
+
+
+def when_it_applies(cands: list[dict]) -> list[str]:
+    """When 2+ different standards match: for each, what it covers (IS title + QCO product group) and the words
+    only its title/QCO use, so the user can tell them apart. Built from the data, no model."""
+    if len({c["is_number"] for c in cands}) < 2:
+        return [""] * len(cands)
+    words = [_words(f"{c['is_title']} {qco_scope(c['qco']['title'])}") for c in cands]
+    out = []
+    for i, c in enumerate(cands):
+        others = set().union(*(w for j, w in enumerate(words) if j != i and cands[j]["is_number"] != c["is_number"]))
+        only = sorted(words[i] - others)
+        scope = qco_scope(c["qco"]["title"])
+        text = c["is_title"].rstrip(". ")
+        if scope and scope.lower() not in text.lower():
+            text += f" (QCO covers: {scope})"
+        if only:
+            text += f"; only this one mentions: {', '.join(only[:6])}"
+        out.append(text)
+    return out
 
 
 FOREIGN = re.compile(r"\b(made in (?!india)\w+|import\w*|imported|from (?!india)(china|vietnam|japan|korea|taiwan|thailand|"
@@ -282,7 +316,9 @@ def tool_context(rec: dict, sch: dict) -> tuple[list[dict], str]:
     for c in rec["candidates"]:
         ref = f"[{n[c['source']['row_chunk_id']]}]" if c["source"]["row_chunk_id"] in n else ""
         lines.append(f"- {c['is_number']} | {c['product_name']} | compulsory: {c['compulsory']} | scheme {c['scheme']} | "
-                     f"QCO: {c['qco']['title'][:160]} {ref}" + (f" | deciding factor: {c['deciding_factor']}" if c.get("deciding_factor") else ""))
+                     f"QCO: {c['qco']['title'][:160]} {ref}"
+                     + (f" | when it applies: {c['when_it_applies']}" if c.get("when_it_applies") else "")
+                     + (f" | deciding factor: {c['deciding_factor']}" if c.get("deciding_factor") else ""))
     if not rec["candidates"]:
         lines.append("- No matching product row in the BIS compulsory-certification lists I have.")
     for r in sch["results"]:

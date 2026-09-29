@@ -19,7 +19,8 @@ _lock = threading.Lock()
 def _model():
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(MODEL)
+    from app import config  # the OS temp folder (fastembed's default) gets cleared: keep the model in index/models
+    return TextCrossEncoder(MODEL, cache_dir=str(config.ROOT / "index" / "models"))
 
 
 def available() -> bool:
