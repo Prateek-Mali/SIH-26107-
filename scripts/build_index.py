@@ -52,7 +52,7 @@ def embed_with_wait(texts: list[str], tries: int = 10) -> list[list[float]]:
     for attempt in range(tries):
         try:
             return embed(texts, task="RETRIEVAL_DOCUMENT")
-        except httpx.HTTPError as e:  # local Ollama restarting or overloaded
+        except httpx.HTTPError as e:  # network error from the embedding API
             if attempt == tries - 1:
                 raise
             print(f"  embedding server error ({type(e).__name__}); retrying in 15 s")

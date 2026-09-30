@@ -32,4 +32,4 @@
 1. With Gemini back: `eval/run_test_paper.py D4 D5 B6 F5 E1 E3 B2 B3 C2 C4`, then F6 F7 G H I J, then
    `eval/chat_feel.py` (25-min cap). C2 on Groq still missed the AIR; check it on Gemini.
 2. Recommender: with no product type, "organic honey" matched unrelated de-notified food rows.
-3. `scripts/embedding_map.py` search box still calls Ollama in the browser; README setup still says `ollama pull`.
+3. Done: Ollama leftovers, old multi-agent code and the Streamlit app removed.

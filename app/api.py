@@ -9,6 +9,7 @@ GET  /sources        every indexed document with date and page count
 POST /admin/reindex  re-parse, re-chunk, re-index (including data/manual/) in the background
 """
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -28,7 +29,12 @@ from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pi
 from app.retrieval import reload, retrieve
 
 app = FastAPI(title="BIS Assistant API", version="0.2")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# the web UI is served from this same server, so no other site needs access; list extra origins in ALLOWED_ORIGINS
+if config.ALLOWED_ORIGINS:
+    app.add_middleware(CORSMiddleware, allow_origins=config.ALLOWED_ORIGINS, allow_credentials=True,
+                       allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
+log = logging.getLogger("bis.api")
+FRIENDLY_ERROR = "Something went wrong while answering. Please try again in a moment."
 
 REINDEX = {"running": False, "started": None, "finished": None, "log": ""}
 
@@ -67,6 +73,20 @@ def current_user(request: Request) -> dict:
     return user
 
 
+FAILED: dict[str, list[float]] = {}   # client address -> times of failed login/signup attempts
+MAX_FAILS, FAIL_WINDOW_S = 10, 15 * 60
+
+
+def _check_attempts(request: Request):
+    # ponytail: in-memory, per server process; use MongoDB or Redis when running several servers
+    ip = request.client.host if request.client else "?"
+    recent = [t for t in FAILED.get(ip, []) if time.time() - t < FAIL_WINDOW_S]
+    FAILED[ip] = recent
+    if len(recent) >= MAX_FAILS:
+        raise HTTPException(429, "Too many attempts. Please wait 15 minutes and try again.")
+    return ip
+
+
 def _set_cookie(response: Response, request: Request, token: str):
     response.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400, httponly=True, samesite="lax",
                         secure=request.url.scheme == "https", path="/")
@@ -74,18 +94,22 @@ def _set_cookie(response: Response, request: Request, token: str):
 
 @app.post("/auth/signup")
 def signup(req: AuthRequest, request: Request, response: Response):
+    ip = _check_attempts(request)
     try:
         _set_cookie(response, request, auth.signup(req.email, req.password))
     except auth.AuthError as e:
+        FAILED.setdefault(ip, []).append(time.time())
         raise HTTPException(400, str(e))
     return {"email": req.email.strip().lower()}
 
 
 @app.post("/auth/login")
 def login(req: AuthRequest, request: Request, response: Response):
+    ip = _check_attempts(request)
     try:
         _set_cookie(response, request, auth.login(req.email, req.password))
     except auth.AuthError as e:
+        FAILED.setdefault(ip, []).append(time.time())
         raise HTTPException(401, str(e))
     return {"email": req.email.strip().lower()}
 
@@ -155,7 +179,8 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
     try:
         return _chat(req, user)
     except Exception as e:  # show the real error, never a fake refusal
-        return {"error": f"{type(e).__name__}: {e}"}
+        log.exception("chat failed")  # the details go to the server log, not to the user
+        return {"error": FRIENDLY_ERROR}
 
 
 @app.post("/chat/stream")
@@ -165,7 +190,8 @@ async def chat_stream(req: ChatRequest, user: dict = Depends(current_user)):
         try:
             result = _chat(req, user)
         except Exception as e:
-            yield {"event": "error", "data": json.dumps({"message": f"{type(e).__name__}: {e}"})}
+            log.exception("chat failed")
+            yield {"event": "error", "data": json.dumps({"message": FRIENDLY_ERROR})}
             return
         for m in re.finditer(r"\S+\s*", result["answer"]):
             yield {"event": "token", "data": json.dumps({"text": m.group(0)}, ensure_ascii=False)}
@@ -260,6 +286,8 @@ def _reindex_job():
 
 @app.post("/admin/reindex")
 def admin_reindex(user: dict = Depends(current_user)):
+    if user["email"] not in config.ADMIN_EMAILS:
+        raise HTTPException(403, "Only an admin can re-index.")
     if REINDEX["running"]:
         return {"status": "already running", "started": REINDEX["started"]}
     threading.Thread(target=_reindex_job, daemon=True).start()

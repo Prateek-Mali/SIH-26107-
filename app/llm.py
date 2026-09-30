@@ -1,4 +1,4 @@
-"""Gemini client with model + key fallback, and Ollama as the last resort.
+"""Gemini client with model + key fallback, and Groq as the second answer provider.
 
 Quotas are per model, so when a model hits its limit (429) or is overloaded (503) we move to the
 next model in its fallback chain (GEMINI_MODEL_FALLBACKS / GEMINI_ROUTER_FALLBACKS), trying every
@@ -70,7 +70,7 @@ def _is_network_error(e: Exception) -> bool:
 
 
 def _is_fallback_error(e: Exception) -> bool:
-    """Quota, overload or network problems: Ollama may still answer."""
+    """Quota, overload or network problems: the next provider may still answer."""
     if isinstance(e, errors.APIError):
         return e.code in SKIP_MODEL | RETRY_LATER
     return _is_network_error(e) or isinstance(e, AllModelsBusy)

@@ -1,4 +1,4 @@
-"""Standard Recommender + Scheme Selector: the 10 Task-6 cases (live: needs Ollama bge-m3 and the product index).
+"""Standard Recommender + Scheme Selector: the 10 Task-6 cases (live: needs the bge-m3 model and the product index).
 
     pytest tests/test_recommender.py      # pass/fail
     python tests/test_recommender.py      # table: pass/fail, top IS numbers, scheme, latency

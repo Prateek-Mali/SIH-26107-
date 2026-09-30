@@ -28,7 +28,7 @@ re-index. No retraining is needed.
 
 ```
 question
-  └─ agent (Groq gpt-oss-120b → Gemini → local Ollama)
+  └─ agent (Gemini, one pinned model; Groq only as a visible fallback)
        ├─ search_documents   hybrid search: bge-m3 vectors (Qdrant) + BM25, reciprocal rank fusion
        ├─ lookup_product     product index: IS number, QCO, scheme, compulsory status
        ├─ select_scheme      rule table (app/scheme_rules.yaml), every rule cites its source chunk
@@ -42,8 +42,8 @@ orders, about 500 QCO PDFs), plus **995 products** from the BIS compulsory-certi
 
 | Part | Choice |
 |---|---|
-| LLM | Groq (`gpt-oss-120b`, `gpt-oss-20b`) → Google Gemini (model fallback chain) → local Ollama (`qwen2.5:3b`) |
-| Embeddings | `bge-m3` via Ollama (local, free, Hindi + English) |
+| LLM | Google Gemini (`ANSWER_PROVIDER=gemini`); Groq (`gpt-oss-120b`) only as a visible fallback |
+| Embeddings | `bge-m3` inside Python (fastembed ONNX; free, no daily limit, Hindi + English) |
 | Vector DB | Qdrant, embedded mode (no server) |
 | Keyword search | `rank_bm25` (exact IS / S.O. numbers) |
 | Reranker | `BAAI/bge-reranker-base` (ONNX via `fastembed`, CPU) |
@@ -52,13 +52,11 @@ orders, about 500 QCO PDFs), plus **995 products** from the BIS compulsory-certi
 
 ## Setup
 
-Needs Python 3.11+ and [Ollama](https://ollama.com).
+Needs Python 3.11+. The embedding model (bge-m3) and the reranker run inside Python and download on first use.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-ollama pull bge-m3
-ollama pull qwen2.5:3b          # offline fallback model
 cp .env.example .env            # then add your keys
 ```
 
@@ -110,7 +108,7 @@ to it automatically if it fails, so the demo never breaks.
 ## Test and evaluate
 
 ```bash
-.venv/bin/python -m pytest tests          # unit tests + recommender cases (these need Ollama)
+.venv/bin/python -m pytest tests          # unit tests + recommender cases (first run downloads bge-m3)
 .venv/bin/python eval/quick_eval.py       # 10 questions, local scoring, one line each
 .venv/bin/python eval/run_eval.py         # full question set -> eval/report.md
 ```
@@ -130,7 +128,7 @@ scripts/    download, parse, chunk, index, product index, inspection tools
 data/       sources.yaml, product tables (structured/), download log, manual uploads
 eval/       question sets, eval runners, reports
 tests/      pytest suite
-ui/         terminal chat, Streamlit test UI
+ui/         web chat (ui/web: home, login, chat) and terminal chat
 ```
 
 ## Limits
