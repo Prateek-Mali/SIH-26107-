@@ -25,3 +25,5 @@ llvmlite<0.44            # last versions with Intel-mac wheels (umap -> numba)
 numba<0.61
 pyvis>=0.3               # knowledge graph
 pymongo>=4.6            # login database (MongoDB Atlas)
+pillow>=10               # photo check: resize before sending
+python-multipart>=0.0.9  # photo upload (multipart form)

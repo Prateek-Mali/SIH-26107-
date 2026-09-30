@@ -33,3 +33,29 @@
    `eval/chat_feel.py` (25-min cap). C2 on Groq still missed the AIR; check it on Gemini.
 2. Recommender: with no product type, "organic honey" matched unrelated de-notified food rows.
 3. Done: Ollama leftovers, old multi-agent code and the Streamlit app removed.
+
+## Phase 2: photo check (done, 2026-09-30)
+- `app/vision.py` (Gemini vision, JSON schema, newest Flash model), `app/vision_check.py` (format rules cited from the
+  documents: HUID hm_faq_general::0002, R-number ca_regulations_2018::0156, CM/L guide_change_in_scope::0010 (no digit
+  count stated, so not assumed), purity hm_faq_general::0000). CLI `/image <path> ["question"]`; API `POST /chat`
+  with a multipart `image` or JSON `image_base64`.
+- Synthetic test (`eval/vision_eval.py`, 10 images): **9/10 passed** in the full run. The fail was 08_blurry: the
+  model "read" invented numbers (7800912345 for 7600012345, IS 17763 for IS 17803). Fixed in code: numbers from a
+  photo judged blurry are dropped with a note; 08 re-run after the fix: no numbers, honest note (pass).
+
+| image | marks | extracted | format check | answer + cited | latency |
+|---|---|---|---|---|---|
+| 01 ISI bottle | ISI | yes | yes | yes (1) | 47 s |
+| 02 ISI cement | ISI | yes | yes | yes (2) | 31 s |
+| 03 CRS LED | CRS | yes | yes | yes (2) | 37 s |
+| 04 CRS charger, invalid R-number | CRS | yes | yes (invalid caught) | yes (3) | 67 s |
+| 05 gold hallmark | HALLMARK | yes | yes | yes (2) | 63 s |
+| 06 gold, invalid HUID | HALLMARK | yes | yes (invalid caught) | yes (1) | 29 s |
+| 07 ISI helmet | ISI | yes | yes | yes (2) | 36 s |
+| 08 blurry | ISI | no -> fixed | yes | yes (1) | 35 s |
+| 09 no mark | - | yes | yes | yes, "No ISI mark visible; this product requires one" | 30 s |
+| 10 landscape | - | yes | yes | yes, "can't see a product", no sources | 18 s |
+
+- Follow-up works: after the helmet photo, "what documents do they need?" -> rewritten to helmets under IS 4151.
+- To do: latency 30-67 s (vision ~15-20 s + the chat); no real photos tested yet (put some in data/test_images/);
+  the web UI has no photo upload button yet (API and CLI only).

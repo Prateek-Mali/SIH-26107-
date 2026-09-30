@@ -105,6 +105,31 @@ The same server is the API (`/docs`, `/api`):
 Set `AGENT_MODE=off` in `.env` to use the simpler linear pipeline instead of the agent. The agent also falls back
 to it automatically if it fails, so the demo never breaks.
 
+## Photo check
+
+Send a photo of a product, label or hallmark. The assistant reads it with Gemini vision (only what is visible;
+numbers it cannot read clearly, or any number on a blurry photo, are left out, never guessed), checks the number
+formats against the rules in the BIS documents (HUID: 6 alphanumeric characters; CRS: R- + 8 digits; licence:
+CM/L-<number>; purity grades such as 22K916), then answers as usual with citations: the standard, whether
+certification is compulsory, the scheme, whether the required mark is visible, and how to verify the number in the
+BIS CARE app. It never says a licence or HUID is genuine. The product is remembered for follow-up questions.
+
+```bash
+.venv/bin/python ui/chat_cli.py
+You › /image data/test_images/synthetic/07_isi_helmet.png "is this legal to sell?"
+```
+```
+What I see in your photo: protective helmet for two-wheeler riders; ISI mark.
+Numbers on the label: IS number IS 4151, licence CM/L-8300054321.
+- cml number CM/L-8300054321: format looks right: ...
+The ISI mark this product needs is visible in the photo.
+... the standard, compulsory status and scheme, with [n] citations ...
+How to verify: check CM/L-8300054321 in the BIS CARE app ...
+```
+API: `POST /chat` with a multipart form (`message`, `session_id`, `image`) or JSON with `image_base64` and
+`image_name`; the response adds `vision` (what was read) and `format_checks`. Test set: `scripts/make_test_images.py`
+(10 synthetic photos) and `eval/vision_eval.py` (report in `eval/vision_report.md`).
+
 ## Test and evaluate
 
 ```bash

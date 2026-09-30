@@ -1,0 +1,92 @@
+{
+ "01_isi_bottle.png": {
+  "marks": [
+   "ISI"
+  ],
+  "cml_number": "CM/L-7600012345",
+  "is_number_on_label": "IS 17803",
+  "valid": {
+   "cml_number": true
+  },
+  "kind": "product"
+ },
+ "02_isi_cement.png": {
+  "marks": [
+   "ISI"
+  ],
+  "cml_number": "CM/L-4100098765",
+  "is_number_on_label": "IS 12330",
+  "valid": {
+   "cml_number": true
+  },
+  "kind": "product"
+ },
+ "03_crs_led.png": {
+  "marks": [
+   "CRS"
+  ],
+  "r_number": "R-41012345",
+  "valid": {
+   "r_number": true
+  },
+  "kind": "product"
+ },
+ "04_crs_charger_invalid.png": {
+  "marks": [
+   "CRS"
+  ],
+  "r_number": "R-4101234",
+  "valid": {
+   "r_number": false
+  },
+  "kind": "product"
+ },
+ "05_gold_hallmark.png": {
+  "marks": [
+   "HALLMARK"
+  ],
+  "huid": "AB12C3",
+  "purity": "22K916",
+  "valid": {
+   "huid": true,
+   "purity": true
+  },
+  "kind": "product"
+ },
+ "06_gold_invalid_huid.png": {
+  "marks": [
+   "HALLMARK"
+  ],
+  "huid": "XY7Q2",
+  "purity": "18K750",
+  "valid": {
+   "huid": false,
+   "purity": true
+  },
+  "kind": "product"
+ },
+ "07_isi_helmet.png": {
+  "marks": [
+   "ISI"
+  ],
+  "cml_number": "CM/L-8300054321",
+  "is_number_on_label": "IS 4151",
+  "valid": {
+   "cml_number": true
+  },
+  "kind": "product"
+ },
+ "08_blurry.png": {
+  "kind": "blurry",
+  "no_invented_numbers": true
+ },
+ "09_no_mark_bottle.png": {
+  "marks": [],
+  "kind": "no_mark",
+  "must_say": "No ISI mark visible"
+ },
+ "10_landscape.png": {
+  "kind": "not_product",
+  "marks": []
+ }
+}

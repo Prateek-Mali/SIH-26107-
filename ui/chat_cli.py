@@ -4,7 +4,7 @@
     .venv/bin/python ui/chat_cli.py --api      # use a running API at http://localhost:8000
 
 Commands: /trace (toggle "How I answered": every stage), /nocache, /new, /history, /profile, /forget, /sessions,
-/resume <id>, /quit. Memory is local (data/memory.sqlite); the last session is resumed on restart (data/.last_session).
+/resume <id>, /image <path> ["question"] (product photo check), /quit. Memory is local (data/memory.sqlite); the last session is resumed on restart (data/.last_session).
 The footer shows the answer model; "FALLBACK: <provider>" means the pinned model (ANSWER_PROVIDER) failed.
 """
 import logging
@@ -108,7 +108,7 @@ def main():
         from app import memory
     print(f"{BOLD}BIS Assistant{RESET} — answers from official BIS documents, with sources (English or हिन्दी).")
     print(f"{DIM}{'API ' + API if use_api else 'local'} · commands: /trace /nocache /new /history /profile /forget "
-          f"/sessions /resume <id> /quit{RESET}")
+          f"/sessions /resume <id> /image <path> /quit{RESET}")
     show_trace, use_cache = False, True
     session = LAST.read_text().strip() if LAST.exists() else ""
     if not use_api:
@@ -140,9 +140,28 @@ def main():
             if new:
                 session = new
                 continue
-        print(f"{DIM}searching official BIS documents…{RESET}", end="", flush=True)
+        image = None
+        if q.startswith("/image"):  # /image <path> ["question"]: product photo check (app/vision.py)
+            import shlex
+            try:
+                parts = shlex.split(q)[1:]
+            except ValueError:
+                parts = q.split()[1:]
+            if not parts or not os.path.isfile(os.path.expanduser(parts[0])):
+                print(f"{RED}usage: /image <path to a jpg/png/webp/heic photo> [question]{RESET}\n")
+                continue
+            image, q = os.path.expanduser(parts[0]), " ".join(parts[1:])
+        print(f"{DIM}{'reading your photo…' if image else 'searching official BIS documents…'}{RESET}", end="", flush=True)
         try:
-            res = ask_api(q, session) if use_api else memory.chat(q, session, use_cache=use_cache)
+            if image and not use_api:
+                from app.vision import photo_chat
+                with open(image, "rb") as f:
+                    res = photo_chat(f.read(), image, q, session, use_cache=use_cache)
+            elif image:
+                print(f"\r\033[K{RED}/image works in local mode (without --api){RESET}\n")
+                continue
+            else:
+                res = ask_api(q, session) if use_api else memory.chat(q, session, use_cache=use_cache)
         except KeyboardInterrupt:
             print(f"\r\033[K{DIM}(stopped){RESET}\n")
             continue

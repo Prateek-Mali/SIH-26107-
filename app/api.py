@@ -8,6 +8,8 @@ GET  /health         providers, embeddings, index counts
 GET  /sources        every indexed document with date and page count
 POST /admin/reindex  re-parse, re-chunk, re-index (including data/manual/) in the background
 """
+import base64
+import binascii
 import json
 import logging
 import re
@@ -20,9 +22,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sse_starlette.sse import EventSourceResponse
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from app import auth, config
 from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pipeline
@@ -40,8 +42,21 @@ REINDEX = {"running": False, "started": None, "finished": None, "log": ""}
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=2000)
+    message: str = Field("", max_length=2000)            # may be empty when a photo is sent
     session_id: str | None = Field(None, max_length=100, pattern=r"^[A-Za-z0-9_-]*$")  # none -> a new session
+    image_base64: str | None = Field(None, max_length=14_000_000)   # optional product photo (<= 10 MB)
+    image_name: str | None = Field(None, max_length=200)            # e.g. "label.jpg" (gives the file type)
+
+    def image(self) -> tuple[bytes, str] | None:
+        if not self.image_base64:
+            if not self.message.strip():
+                raise HTTPException(422, "Send a message or a photo.")
+            return None
+        try:
+            data = base64.b64decode(self.image_base64.split(",")[-1], validate=True)  # plain or data: URL
+        except (ValueError, binascii.Error):
+            raise HTTPException(400, "The photo is not valid base64.")
+        return data, self.image_name or "photo.jpg"
 
 
 class SearchRequest(BaseModel):
@@ -127,9 +142,39 @@ def me(user: dict = Depends(current_user)):
 
 
 # ---------------------------------------------------------------- conversations (local SQLite memory, per user)
-def _chat(req: ChatRequest, user: dict) -> dict:
+def _chat(req: ChatRequest, user: dict, image: tuple[bytes, str] | None = None) -> dict:
     from app import memory
+    if image:  # Phase 2: product photo -> what is on it -> the normal cited answer (app/vision.py)
+        from app.vision import photo_chat
+        try:
+            return photo_chat(image[0], image[1], req.message, req.session_id or None, owner=user["email"])
+        except ValueError as e:  # wrong file type / too large: tell the user exactly that
+            raise HTTPException(400, str(e))
     return memory.chat(req.message, req.session_id or None, owner=user["email"])
+
+
+async def _chat_request(request: Request) -> tuple[ChatRequest, tuple[bytes, str] | None]:
+    """POST /chat takes JSON (image as base64) or a multipart form (message, session_id, image file)."""
+    if request.headers.get("content-type", "").startswith("multipart/form-data"):
+        form = await request.form()
+        upload = form.get("image")
+        req = ChatRequest(message=str(form.get("message") or ""), session_id=form.get("session_id") or None)
+        if upload is not None and hasattr(upload, "read"):
+            data = await upload.read(vision_max_bytes() + 1)
+            return req, (data, upload.filename or "photo.jpg")
+        return req, req.image()
+    try:
+        req = ChatRequest(**await request.json())
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False))
+    except ValueError:
+        raise HTTPException(400, "Send JSON or a multipart form.")
+    return req, req.image()
+
+
+def vision_max_bytes() -> int:
+    from app.vision import MAX_BYTES
+    return MAX_BYTES
 
 
 def _own(session_id: str, user: dict):
@@ -175,9 +220,12 @@ def api_index():
 
 
 @app.post("/chat")
-def chat(req: ChatRequest, user: dict = Depends(current_user)):
+async def chat(request: Request, user: dict = Depends(current_user)):
+    req, image = await _chat_request(request)
     try:
-        return _chat(req, user)
+        return await run_in_threadpool(_chat, req, user, image)
+    except HTTPException:
+        raise
     except Exception as e:  # show the real error, never a fake refusal
         log.exception("chat failed")  # the details go to the server log, not to the user
         return {"error": FRIENDLY_ERROR}
@@ -185,10 +233,16 @@ def chat(req: ChatRequest, user: dict = Depends(current_user)):
 
 @app.post("/chat/stream")
 async def chat_stream(req: ChatRequest, user: dict = Depends(current_user)):
+    image = req.image()
+
     def events():
-        yield {"event": "status", "data": json.dumps({"message": "Searching official BIS documents"})}
+        yield {"event": "status", "data": json.dumps({"message": "Reading your photo" if image else
+                                                      "Searching official BIS documents"})}
         try:
-            result = _chat(req, user)
+            result = _chat(req, user, image)
+        except HTTPException as e:
+            yield {"event": "error", "data": json.dumps({"message": e.detail})}
+            return
         except Exception as e:
             log.exception("chat failed")
             yield {"event": "error", "data": json.dumps({"message": FRIENDLY_ERROR})}
@@ -197,6 +251,9 @@ async def chat_stream(req: ChatRequest, user: dict = Depends(current_user)):
             yield {"event": "token", "data": json.dumps({"text": m.group(0)}, ensure_ascii=False)}
         yield {"event": "citations", "data": json.dumps(result["citations"], ensure_ascii=False)}
         yield {"event": "trace", "data": json.dumps(result["trace"], ensure_ascii=False)}
+        if result.get("vision"):
+            yield {"event": "vision", "data": json.dumps({"vision": result["vision"],
+                                                          "format_checks": result["format_checks"]}, ensure_ascii=False)}
         yield {"event": "done", "data": json.dumps({k: result.get(k) for k in ("session_id", "provider", "fallback", "latency_ms",
                                                                                 "sources_used", "refused", "cached")})}
     return EventSourceResponse(iterate_in_threadpool(events()))
