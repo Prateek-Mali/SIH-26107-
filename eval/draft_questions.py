@@ -6,7 +6,7 @@ Drafts get "reviewed": false. After checking a question and its expected answer 
 source document, set "reviewed": true (or delete the line). run_eval.py reports reviewed and
 unreviewed questions separately.
 
-Target mix (CLAUDE.md): 15 law, 15 certification, 15 product_qco, 10 hallmarking_consumer,
+Target mix (PROJECT_BRIEF.md): 15 law, 15 certification, 15 product_qco, 10 hallmarking_consumer,
 5 out-of-scope (hand-written, already in questions.jsonl), 10 Hindi.
 """
 import json

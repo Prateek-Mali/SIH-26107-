@@ -1,5 +1,5 @@
 # BIS Assistant: list of sources to download
-# Claude Code reads this file and downloads everything automatically (scripts/download.py).
+# scripts/download.py reads this file and downloads everything automatically.
 # Every source is an official BIS or Government of India page. All were checked on 26 Sep 2026.
 #
 # type:     pdf  = download the file

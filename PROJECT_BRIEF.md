@@ -1,7 +1,7 @@
-# BIS Assistant: build instructions for Claude Code
+# BIS Assistant: project brief and build instructions
 
 Project: SIH26107, an AI-powered intelligent assistant for Indian Standards and BIS services.
-Owner: Prateek (AI/ML lead). Claude Code writes all code. It downloads all data itself from `data/sources.yaml`; the owner downloads nothing by hand.
+Owner: Prateek (AI/ML lead). All data is downloaded automatically from `data/sources.yaml`; nothing is downloaded by hand.
 
 ## Goal of Phase 1 (build this first)
 A **text-only, multi-agent RAG chatbot**. It answers questions about BIS law, certification, product rules (QCOs) and hallmarking, and **every answer has citations to official BIS documents**. Images come in Phase 2. Do not start them now.
@@ -33,7 +33,7 @@ Why RAG, not fine-tuning: rules change often (new QCOs and amendments every mont
 ## Folder structure (create exactly this)
 ```
 bis-assistant/
-├── CLAUDE.md                  # this file
+├── PROJECT_BRIEF.md           # this file
 ├── .env.example               # keys and model names (copy to .env)
 ├── requirements.txt
 ├── data/
