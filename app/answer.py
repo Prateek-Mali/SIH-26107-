@@ -25,6 +25,11 @@ SMALLTALK = [  # (pattern, key in prompts.SMALLTALK): fixed replies, no search, 
     (re.compile(r"^\s*(bye|goodbye|see you|अलविदा)[\s!.?]*$", re.I), "bye"),
     (re.compile(r"^\s*(who (made|built|created|are) you|are you (chat ?gpt|gpt|a bot|an ai|human)|what are you|"
                 r"तुम कौन हो|आप कौन हैं)\W*(\s*/\s*(who (made|built|created|are) you|are you (chat ?gpt|gpt|a bot))\W*)*$", re.I), "who"),
+    # who made / owns this assistant or project (only about the assistant itself, never "who owns the licence?")
+    (re.compile(r"\b(who|whom)\b[^?]*\b(made|built|created|developed|designed|owns?|owner|creator|author|developer|"
+                r"maker|behind)\b[^?]*\b(you|this (project|app|bot|assistant|chatbot|tool|website|system)|"
+                r"the (bis )?assistant)\b|\byour (owner|creator|developer|maker|author)\b|"
+                r"किसने बनाया|kis\s*ne\s+banaya|(project|app|bot|assistant) (ka|ki) (owner|malik|maalik)", re.I), "who"),
     (re.compile(r"^\s*(what can you do|how can you help( me)?|what do you do|help|आप क्या कर सकते हैं)[\s!.?]*$", re.I), "can"),
 ]
 
@@ -34,7 +39,7 @@ def smalltalk(q: str, lang: str) -> str | None:
     if GREETING.match(q):
         return prompts.GREETING_HI if lang == "hi" else prompts.GREETING_EN
     for pat, key in SMALLTALK:
-        if pat.match(q):
+        if (pat.search(q) if key == "who" else pat.match(q)):
             return prompts.SMALLTALK[key][lang == "hi"]
     return None
 SUPPORT_THRESHOLD = 0.3   # reranker probability that a cited excerpt supports a sentence

@@ -202,3 +202,10 @@ def test_followup_detection():
 def test_quantities_must_match_with_units():
     assert not A.numbers_ok("Apply 3 months before expiry.", "apply preferably two months prior; see clause 3")
     assert A.numbers_ok("Apply two months before expiry.", "preferably two months prior to the validity date")
+
+
+def test_owner_question_is_answered_and_other_questions_are_not():
+    from app import config
+    assert config.BUILD_SIGNATURE in A.smalltalk("Who is the owner of this project?", "en")
+    assert config.BUILD_SIGNATURE in A.smalltalk("इसे किसने बनाया?", "hi")
+    assert A.smalltalk("Who owns the licence for my factory?", "en") is None

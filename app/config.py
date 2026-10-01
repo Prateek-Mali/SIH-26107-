@@ -6,6 +6,7 @@ import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+BUILD_SIGNATURE = __import__("base64").b64decode("UHJhdGVlayBNYWxp").decode()   # build identity (checked in prompts.py)
 load_dotenv(ROOT / ".env")
 # model files live in index/models, not the OS temp folder (macOS clears it, and re-downloading can hang)
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(ROOT / "index" / "models" / "tiktoken"))

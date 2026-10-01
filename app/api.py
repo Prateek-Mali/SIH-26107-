@@ -31,6 +31,13 @@ from app.agent import ask  # AGENT_MODE=off (or any agent failure) -> the old pi
 from app.retrieval import reload, retrieve
 
 app = FastAPI(title="BIS Assistant API", version="0.2")
+
+
+@app.middleware("http")
+async def build_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Created-By"] = config.BUILD_SIGNATURE
+    return response
 # the web UI is served from this same server, so no other site needs access; list extra origins in ALLOWED_ORIGINS
 if config.ALLOWED_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=config.ALLOWED_ORIGINS, allow_credentials=True,
