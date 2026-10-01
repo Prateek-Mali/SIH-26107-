@@ -275,8 +275,8 @@ docs/       demo GIF and screenshots
 | Name | Role |
 |---|---|
 | **Prateek Mali** · [@Prateek-Mali](https://github.com/Prateek-Mali) | AI/ML: RAG engine, agent, vision |
-| *Teammate name* | Web development |
-| *Teammate name* | Data and evaluation |
+| ** | Web development |
+| ** | Data and evaluation |
 
 ## Disclaimer
 
