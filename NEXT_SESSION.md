@@ -59,3 +59,27 @@
 - Follow-up works: after the helmet photo, "what documents do they need?" -> rewritten to helmets under IS 4151.
 - To do: latency 30-67 s (vision ~15-20 s + the chat); no real photos tested yet (put some in data/test_images/);
   the web UI has no photo upload button yet (API and CLI only).
+
+## Phase 2 finish: speed + web upload (2026-10-01)
+- No real photos in data/test_images/ yet, so the real-photo check and the per-number blurry rule are not done.
+- Fast photo path (no agent loop): vision (Flash-Lite, short prompt, 1024 px, cached by image hash) -> product tools and
+  search in parallel -> ONE answer call with the tool evidence + top 8 excerpts -> citation check. Fixes found on the
+  way: keep the CM/L-/R-/IS prefixes when reading; pass the label's IS number to the product lookup; CRS products are
+  "II-CRS" in the lists (the required-mark line now works for CRS).
+- Synthetic set: **10/10 passed** (was 9/10).
+
+| image | before | after |
+|---|---|---|
+| 01 ISI bottle | 47 s | 23.3 s (first call: model load) |
+| 02 ISI cement | 31 s | 13.0 s |
+| 03 CRS LED | 37 s | 13.1 s |
+| 04 CRS charger (invalid R) | 67 s | 13.1 s |
+| 05 gold hallmark | 63 s | 10.6 s |
+| 06 gold (invalid HUID) | 29 s | 11.4 s |
+| 07 ISI helmet | 36 s | 14.3 s |
+| 08 blurry | 35 s | 14.1 s |
+| 09 no mark | 30 s | 11.9 s |
+| 10 landscape | 18 s | 1.6 s |
+
+- Web UI: photo button in the chat input, thumbnail in the user message, "What I see in your photo" card above the
+  answer (ui/web/chat.html). Not yet clicked through in a browser.

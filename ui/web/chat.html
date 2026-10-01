@@ -83,6 +83,17 @@ form:focus-within{border-color:var(--green)}
 textarea{flex:1;min-height:40px;max-height:200px;padding:10px 0;border:0;resize:none;background:transparent;font:inherit;font-size:15px;line-height:1.45;color:var(--ink)}
 .send{flex:none;width:40px;height:40px;border:0;border-radius:12px;background:var(--green);color:var(--bg);font-size:18px}
 .send:disabled{background:#B9C7BF;cursor:default}
+.attach{flex:none;width:40px;height:40px;margin-left:-8px;border:0;border-radius:12px;background:transparent;color:var(--muted);display:grid;place-items:center}
+.attach:hover{background:var(--hover);color:var(--ink)}
+.preview{max-width:760px;margin:0 auto 8px;display:none;align-items:center;gap:10px;padding:6px 8px;background:var(--card);border:1px solid var(--line);border-radius:14px;font-size:13px;color:var(--muted)}
+.preview img{width:44px;height:44px;object-fit:cover;border-radius:10px;background:var(--side)}
+.preview span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.preview button{border:0;background:transparent;color:var(--faint);font-size:16px;width:32px;height:32px;border-radius:8px}
+.preview button:hover{background:var(--hover);color:var(--ink)}
+.user img{display:block;max-width:220px;max-height:220px;border-radius:12px;margin-bottom:8px}
+.seen{border:1px solid var(--line);background:var(--card);border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.5}
+.seen b{display:block;color:var(--green);font-weight:600;margin-bottom:4px}
+.seen ul{margin:6px 0 0;padding-left:1.2em}.seen .bad{color:#8A2A12}.seen .q{color:var(--muted);font-size:13px;margin-top:6px}
 .hint{max-width:760px;margin:8px auto 0;text-align:center;font-size:12px;color:var(--muted)}
 @media (max-width:819px){aside{position:fixed;display:none}aside.open{display:flex}.scrim.open{display:block}.menu{display:block}}
 </style>
@@ -102,7 +113,13 @@ textarea{flex:1;min-height:40px;max-height:200px;padding:10px 0;border:0;resize:
     <header><button class="menu" id="menu" aria-label="Open conversations">☰</button><span class="title" id="title">New conversation</span></header>
     <div class="scroll" id="scroll"><div class="thread" id="thread"></div></div>
     <div class="composer">
+      <div class="preview" id="preview"><img id="previewImg" alt=""><span id="previewName"></span>
+        <button type="button" id="removePhoto" aria-label="Remove photo">×</button></div>
       <form id="form">
+        <button class="attach" type="button" id="attach" aria-label="Add a product photo" title="Add a product photo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        </button>
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/heic,.heic" hidden>
         <textarea id="input" rows="1" placeholder="Ask about standards, certification or hallmarking…" aria-label="Message"></textarea>
         <button class="send" id="send" type="submit" aria-label="Send" disabled>↑</button>
       </form>
@@ -129,6 +146,15 @@ function savedSources(answer) {   // a stored answer keeps its source list as te
   return list.split('\n').map(l => l.match(/^\[(\d+)\] (.+?)(?:: (.+))? \| (\S+)$/)).filter(Boolean)
              .map(m => ({n: +m[1], title: m[2], section: m[3] || '', url: m[4]}));
 }
+function seenCard(d) {   // "What I see in your photo" from the vision event (the answer text then skips that paragraph)
+  const v = d.vision || {}, marks = (v.marks || []).map(m => m.type + ' mark').join(', ') || 'no certification mark visible';
+  const checks = (d.format_checks || []).map(c => `<li class="${c.valid_format ? '' : 'bad'}">${esc(c.field.replace('_', ' '))} <b style="display:inline;color:inherit">${esc(c.value)}</b>: format ${c.valid_format ? 'looks right' : 'does not match'}</li>`).join('');
+  const nums = [['is_number_on_label', 'IS number'], ['cml_number', 'Licence'], ['r_number', 'Registration'], ['huid', 'HUID'], ['purity', 'Purity']]
+    .filter(([k]) => v[k]).map(([k, l]) => `${l} ${esc(v[k])}`).join(' · ');
+  return `<div class="seen"><b>What I see in your photo</b>${esc(v.product_type || v.product_description || 'No product')} · ${esc(marks)}
+    ${nums ? `<div>${nums}</div>` : ''}${checks ? `<ul>${checks}</ul>` : ''}
+    ${v.image_quality && v.image_quality !== 'good' ? `<div class="q">Photo ${esc(v.image_quality)}${v.notes ? ': ' + esc(v.notes) : ''}</div>` : ''}</div>`;
+}
 function renderMd(text, key) {
   const html = DOMPurify.sanitize(marked.parse(body(text), {breaks: true}));
   return html.replace(/\[(\d+)\]/g, (m, n) => `<span class="cite" data-k="${key}" data-n="${n}">[${n}]</span>`);
@@ -146,9 +172,10 @@ function render() {
     t.querySelectorAll('[data-s]').forEach(b => b.onclick = () => send(SUGG[b.dataset.s].sub));
   } else {
     t.innerHTML = state.messages.map((m, i) => m.role === 'user'
-      ? `<div class="user">${esc(m.content)}</div>`
+      ? `<div class="user">${m.image ? `<img src="${m.image}" alt="Your photo">` : ''}${esc(m.content)}</div>`
       : `<div class="bot"><div class="av">B</div><div class="body">
-           <div class="md">${m.pending && !m.content ? '<div class="dots"><span></span><span></span><span></span></div>' : renderMd(m.content, i)}</div>
+           ${m.vision ? seenCard(m.vision) : ''}
+           <div class="md">${m.pending && !m.content ? '<div class="dots"><span></span><span></span><span></span></div>' : renderMd(m.vision ? m.content.replace(/^\*\*What I see in your photo:\*\*[\s\S]*?\n\n/, '') : m.content, i)}</div>
            ${(m.citations || []).length ? `<div class="sources">${m.citations.map(c => `
              <a class="src" id="src-${i}-${c.n}" href="${esc(c.url)}" target="_blank" rel="noopener"><span class="n">${c.n}</span>
              <span><span>${esc(c.title)}</span><br><span class="m">${esc([c.section, c.page ? 'p. ' + c.page : '', c.doc_date ? 'dated ' + c.doc_date : ''].filter(Boolean).join(' · '))}</span></span></a>`).join('')}</div>` : ''}
@@ -170,7 +197,7 @@ function render() {
   }
   const cur = state.sessions.find(s => s.session_id === state.sid);
   $('title').textContent = cur ? cur.title : (state.messages[0]?.content.slice(0, 48) || 'New conversation');
-  $('send').disabled = state.busy || !$('input').value.trim();
+  $('send').disabled = state.busy || (!$('input').value.trim() && !state.photo);
   $('scroll').scrollTop = $('scroll').scrollHeight;
 }
 
@@ -234,14 +261,21 @@ function newChat() {
 
 async function send(text) {
   text = (text || '').trim();
-  if (!text || state.busy) return;
-  state.messages.push({role: 'user', content: text});
+  const photo = state.photo;
+  if ((!text && !photo) || state.busy) return;
+  let image = {};
+  if (photo) {
+    image = {image_base64: await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(photo.file); }),
+             image_name: photo.file.name || 'photo.jpg'};
+    clearPhoto();
+  }
+  state.messages.push({role: 'user', content: text, image: photo && photo.url});
   const bot = {role: 'bot', content: '', pending: true};
   state.messages.push(bot);
   state.busy = true; $('input').value = ''; autosize(); render();
   try {
     const res = await api('/chat/stream', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                             body: JSON.stringify({message: text, session_id: state.sid})});
+                                             body: JSON.stringify({message: text, session_id: state.sid, ...image})});
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '';
@@ -258,6 +292,7 @@ async function send(text) {
         if (ev === 'token') { bot.content += d.text; render(); }
         else if (ev === 'citations') bot.citations = d;
         else if (ev === 'trace') bot.trace = traceText(d);
+        else if (ev === 'vision') bot.vision = d;
         else if (ev === 'error') bot.content = "I couldn't answer just now: " + d.message;
         else if (ev === 'done') {
           state.sid = d.session_id || state.sid; store.set('bis.session', state.sid);
@@ -277,7 +312,19 @@ function autosize() { const ta = $('input'); ta.style.height = 'auto'; ta.style.
 function closeSide() { $('side').classList.remove('open'); $('scrim').classList.remove('open'); }
 
 $('form').onsubmit = e => { e.preventDefault(); send($('input').value); };
-$('input').oninput = () => { autosize(); $('send').disabled = state.busy || !$('input').value.trim(); };
+$('input').oninput = () => { autosize(); canSend(); };
+function canSend() { $('send').disabled = state.busy || (!$('input').value.trim() && !state.photo); }
+function clearPhoto() { state.photo = null; $('file').value = ''; $('preview').style.display = 'none'; canSend(); }
+$('attach').onclick = () => $('file').click();
+$('removePhoto').onclick = clearPhoto;
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  if (f.size > 10 * 1024 * 1024) { alert('The photo is larger than 10 MB. Please choose a smaller one.'); $('file').value = ''; return; }
+  state.photo = {file: f, url: URL.createObjectURL(f)};
+  $('previewImg').src = state.photo.url; $('previewName').textContent = f.name;
+  $('preview').style.display = 'flex'; canSend(); $('input').focus();
+};
 $('input').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send($('input').value); } };
 $('newChat').onclick = newChat;
 $('menu').onclick = () => { $('side').classList.add('open'); $('scrim').classList.add('open'); };

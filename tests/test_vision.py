@@ -27,7 +27,7 @@ def png(w=3200, h=2000) -> bytes:
 
 def test_prepare_resizes_and_rejects_bad_files():
     data, mime = vision.prepare(png(), "label.png")
-    assert mime == "image/jpeg" and max(Image.open(io.BytesIO(data)).size) == 1600
+    assert mime == "image/jpeg" and max(Image.open(io.BytesIO(data)).size) == vision.MAX_SIDE == 1024
     assert vision.prepare(b"heic-bytes", "photo.HEIC") == (b"heic-bytes", "image/heic")
     with pytest.raises(ValueError, match="jpg, png"):
         vision.prepare(png(), "notes.pdf")
@@ -46,17 +46,15 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "DB", tmp_path / "m.sqlite")
     state = {"v": dict(V_BOTTLE), "asked": []}
     monkeypatch.setattr(vision, "read_image", lambda data, name: dict(state["v"]))
-    import app.recommender as R
-    monkeypatch.setattr(R, "recommend_standards", lambda d, attrs=None: {"candidates": [
-        {"is_number": "IS 17803", "compulsory": "yes", "scheme": "I", "source": {"row_chunk_id": "row::1"}}]})
-    monkeypatch.setattr(R, "select_scheme", lambda p, c, t="": {"results": [{"key": "scheme1"}]})
+    rec = {"candidates": [{"is_number": "IS 17803", "compulsory": "yes", "scheme": "I",
+                           "source": {"row_chunk_id": "row::1"}}]}
 
-    def chat(q, sid=None, use_cache=True, owner=""):
-        state["asked"].append(q)
-        return {"answer": "IS 17803 applies [1].\n\n**Sources:**\n[1] list | url", "refused": False,
-                "citations": [{"n": 1, "chunk_id": "row::1"}], "session_id": memory.ensure(sid, owner),
-                "trace": {"stages": {}}, "latency_ms": 1}
-    monkeypatch.setattr(memory, "chat", chat)
+    def answer(v, question, sid, precious, t0):
+        state["asked"].append((v["product_description"], question))
+        return ({"answer": "IS 17803 applies [1].\n\n**Sources:**\n[1] list | url", "refused": False,
+                 "citations": [{"n": 1, "chunk_id": "row::1"}], "trace": {"stages": {}}, "latency_ms": 1},
+                rec, {"results": [{"key": "scheme1"}]})
+    monkeypatch.setattr(vision, "_answer", answer)
     return state
 
 
@@ -64,7 +62,8 @@ def test_missing_required_mark_is_reported_and_product_remembered(fake):
     r = vision.photo_chat(b"x", "a.jpg", "is this legal?")
     assert r["answer"].startswith("**What I see in your photo:** steel water bottle; no certification mark visible")
     assert "**No ISI mark visible; this product requires one** [1]" in r["answer"]
-    assert "Product in my photo: stainless steel water bottle" in fake["asked"][0]
+    assert fake["asked"][0] == ("stainless steel water bottle", "is this legal?")
+    assert "[photo: steel water bottle] is this legal?" in memory.turns(r["session_id"])[0]["content"]
     assert memory.profile(r["session_id"])["product"] == "steel water bottle"
     assert r["answer"].endswith("[1] list | url")                       # sources stay last
 
@@ -90,7 +89,6 @@ def test_blurry_numbers_are_dropped(monkeypatch):
                 '"other_text": null, "image_quality": "blurry", "notes": null}')
         model_version = "fake"
     monkeypatch.setattr(vision.llm, "_call", lambda fn, models, rounds=1: Resp())
-    monkeypatch.setattr(vision, "vision_model", lambda: "fake")
     v = vision.read_image(png(100, 100), "a.png")
     assert v["cml_number"] is None and v["is_number_on_label"] is None and "too blurry" in v["notes"]
 
@@ -112,3 +110,11 @@ def test_api_accepts_multipart_and_base64(monkeypatch, tmp_path):
         assert c.post("/chat", json={"image_base64": "%%%"}).status_code == 400    # not base64
     finally:
         api.app.dependency_overrides.clear()
+
+
+def test_same_photo_is_read_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vision, "_read_image", lambda d, n: calls.append(n) or {"marks": [], "_ms": 5})
+    monkeypatch.setattr(vision, "_VISION_CACHE", {})
+    vision.read_image(b"same", "a.jpg")
+    assert vision.read_image(b"same", "b.jpg")["_cached"] and calls == ["a.jpg"]

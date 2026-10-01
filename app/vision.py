@@ -8,17 +8,17 @@ Steps: (1) Gemini reads the photo into a fixed JSON (numbers it cannot clearly r
 description goes through the usual chat (recommender, scheme selector, RAG, citations, memory). The reply starts
 with "What I see in your photo:". It never says a licence or HUID is genuine: only BIS CARE can confirm that.
 """
+import hashlib
 import io
 import json
 import re
 import time
-from functools import lru_cache
 
 from app import config, llm
 from app.vision_check import check
 
 MAX_BYTES = 10 * 1024 * 1024
-MAX_SIDE = 1600
+MAX_SIDE = 1024   # enough for label text; smaller = faster upload and vision call
 MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "heic": "image/heic",
         "heif": "image/heic"}
 MARK_TYPES = ["ISI", "CRS", "HALLMARK", "OTHER"]
@@ -42,33 +42,12 @@ SCHEMA = {
                  "is_number_on_label", "brand", "other_text", "image_quality", "notes"],
 }
 
-PROMPT = """You read photos of products and labels for a Bureau of Indian Standards (BIS) assistant.
-Report ONLY what is visible in the photo. Rules:
-- marks: the certification marks you can see. ISI = the ISI / Standard Mark (a rectangle-like monogram with "ISI",
-  usually with an IS number above and a CM/L licence number below). CRS = the BIS registration mark of the Compulsory
-  Registration Scheme (usually "R-" and digits, often with the IS number). HALLMARK = BIS hallmark on gold/silver
-  (BIS logo, purity like 22K916, a 6-character HUID). OTHER = any other mark. confidence 0-1. No mark -> [].
-- cml_number, r_number, huid, purity, is_number_on_label: copy them EXACTLY, character by character, as printed.
-  If a number is not clearly readable (blurry, cut off, covered), return null and write in notes which one was
-  "unclear". NEVER guess or complete a number.
-- product_type: the product in plain English, or null if the photo shows no product (e.g. a landscape or an animal).
-- product_description: one sentence describing the product (material, use) so its Indian Standard can be found;
-  for a non-product photo, describe what the photo shows.
-- image_quality: good, blurry (text hard to read) or partial (label cut off)."""
-
-
-@lru_cache(maxsize=1)
-def vision_model() -> str:
-    """The newest full Flash model on this key (e.g. gemini-3.8-flash), else GEMINI_MODEL."""
-    try:
-        names = [m.name.split("/")[-1] for m in llm.clients()[0].models.list()]
-    except Exception:
-        return config.GEMINI_MODEL
-    def version(n):
-        m = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", n)
-        return float(m.group(1)) if m else -1
-    best = max(names, key=version, default="")
-    return best if version(best) > 0 else config.GEMINI_MODEL
+PROMPT = """Read this product/label photo for a BIS (Bureau of Indian Standards) assistant. Report ONLY what is visible.
+marks: ISI (Standard Mark box, IS number above, CM/L number below), CRS (R- number with IS number), HALLMARK (BIS logo,
+purity like 22K916, 6-character HUID), OTHER; [] if none. Copy numbers exactly as printed, WITH their prefix
+(cml_number "CM/L-...", r_number "R-...", is_number_on_label "IS ..."); if a number is not clearly readable
+return null and say so in notes. NEVER guess a number. product_type: null if no product (landscape, animal...).
+product_description: one sentence (product, material, use)."""
 
 
 def prepare(data: bytes, filename: str) -> tuple[bytes, str]:
@@ -90,15 +69,29 @@ def prepare(data: bytes, filename: str) -> tuple[bytes, str]:
     return out.getvalue(), "image/jpeg"
 
 
+_VISION_CACHE: dict[str, dict] = {}   # sha256 of the photo -> vision JSON
+
+
 def read_image(data: bytes, filename: str) -> dict:
-    """Photo -> vision JSON (+ model, ms). Raises ValueError for a bad file."""
+    """Photo -> vision JSON (+ model, ms). The same photo twice is read once. Raises ValueError for a bad file."""
+    key = hashlib.sha256(data).hexdigest()
+    if key in _VISION_CACHE:
+        return {**_VISION_CACHE[key], "_ms": 0, "_cached": True}
+    out = _read_image(data, filename)
+    if len(_VISION_CACHE) > 256:  # ponytail: in-process FIFO cache; move to SQLite if photos repeat across restarts
+        _VISION_CACHE.pop(next(iter(_VISION_CACHE)))
+    _VISION_CACHE[key] = out
+    return out
+
+
+def _read_image(data: bytes, filename: str) -> dict:
     from google.genai import types
     body, mime = prepare(data, filename)
     t0 = time.time()
     cfg = types.GenerateContentConfig(temperature=0.0, seed=llm.SEED, response_mime_type="application/json",
                                       response_json_schema=SCHEMA, max_output_tokens=1500)
     contents = [types.Part.from_bytes(data=body, mime_type=mime), PROMPT]
-    models = list(dict.fromkeys([vision_model(), *llm.model_chain(config.GEMINI_MODEL)]))
+    models = llm.model_chain(config.GEMINI_MODEL)  # the pinned Flash(-Lite) model first: fast; fallbacks after
     resp = llm._call(lambda c, m: c.models.generate_content(model=m, contents=contents, config=cfg), models, rounds=1)
     out = json.loads(resp.text)
     out["marks"] = [m for m in out.get("marks") or [] if m.get("type") in MARK_TYPES]
@@ -145,7 +138,7 @@ def mark_line(v: dict, rec: dict, sch: dict, citations: list[dict]) -> str:
     """Whether the required mark is visible; the 'required' part cites the product row the answer cited."""
     top = (rec.get("candidates") or [None])[0]
     key = "hallmarking" if any(r["key"] == "hallmarking" for r in sch.get("results", [])) else (top or {}).get("scheme")
-    need = EXPECTED_MARK.get(key)
+    need = EXPECTED_MARK.get("II" if str(key).startswith("II") else key)  # product lists say "II-CRS"
     if not need:
         return ""
     have = {m["type"] for m in v["marks"]}
@@ -168,13 +161,51 @@ def verify_line(v: dict) -> str:
             "number is genuine; only BIS CARE can confirm it.")
 
 
+def _answer(v: dict, question: str, sid: str, precious: bool, t0: float):
+    """Fast photo path (no agent loop): product tools and document search in parallel -> ONE answer call with the
+    tool evidence + the top 8 excerpts -> the usual citation check (app/answer.ground)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app import answer as A, memory
+    from app.expand import detect_lang
+    from app.recommender import recommend_standards, select_scheme, tool_context
+    from app.retrieval import retrieve
+
+    desc, marks = v["product_description"], ", ".join(m["type"] for m in v["marks"]) or "none"
+    is_no = v.get("is_number_on_label") or ""  # printed on the label: exact evidence for the product lookup
+    ask = question.strip() or "Which Indian Standard applies, is BIS certification compulsory, and which scheme?"
+    q = (f"{ask} (Product in my photo: {desc}. Marks visible: {marks}"
+         + (f"; IS number on label: {v['is_number_on_label']}" if v.get("is_number_on_label") else "") + ".)")
+    with ThreadPoolExecutor(2) as pool:
+        f_ret = pool.submit(retrieve, f"{ask} {desc} {is_no}", top_k=8, with_neighbours=False)
+        rec = recommend_standards(f"{desc} {is_no}".strip(), attrs={"product_type": v.get("product_type") or "", "precious_metal": precious})
+        sch = select_scheme({"is_precious_metal": precious}, rec["candidates"], desc)
+        ret = f_ret.result()
+    tool_chunks, tools_block = tool_context(rec, sch)
+    have = {c["chunk_id"] for c in tool_chunks}
+    chunks = tool_chunks + A.fit_budget([c for c in ret["chunks"] if c["chunk_id"] not in have][:8], q,
+                                        budget=A.CONTEXT_CHARS // 2)
+    lang = "hi" if detect_lang(question) == "hi" else "en"
+    known = memory.profile(sid)
+    stages = {"mode": "photo", "sent_to_llm": [c["chunk_id"] for c in chunks], "product": v.get("product_type")}
+    trace = {"stages": stages, "chunks": [{"n": n, "chunk_id": c["chunk_id"], "title": c["title"]}
+                                          for n, c in enumerate(chunks, start=1)]}
+    prompt = A.answer_prompt(q, chunks, lang, tools_block=tools_block, known=known)
+    raw, provider = A.generate(prompt)
+
+    def regen(sub, extra):
+        return A.generate(A.answer_prompt(q, sub, lang, tools_block=tools_block if sub is chunks else "", known=known) + extra)
+
+    res = A.ground(q, q, lang, chunks, raw, provider, regen, stages, ret["trace"].get("max_rerank", 0.0), None, t0, trace)
+    return res, rec, sch
+
+
 def photo_chat(data: bytes, filename: str, question: str = "", session_id: str | None = None,
                owner: str = "", use_cache: bool = True) -> dict:
     from app import memory
-    from app.recommender import recommend_standards, select_scheme
 
     t0 = time.time()
-    v = read_image(data, filename)
+    v = read_image(data, filename) if use_cache else _read_image(data, filename)
     checks = check(v)
     sid = memory.ensure(session_id, owner)
     if not v.get("product_type") and not v["marks"]:  # not a product: say what it is, nothing invented
@@ -188,16 +219,11 @@ def photo_chat(data: bytes, filename: str, question: str = "", session_id: str |
 
     precious = any(m["type"] == "HALLMARK" for m in v["marks"]) or bool(re.search(r"\b(gold|silver)\b",
                                                                                    v["product_description"], re.I))
-    rec = recommend_standards(v["product_description"], attrs={"product_type": v.get("product_type") or "",
-                                                                "precious_metal": precious})
-    sch = select_scheme({"is_precious_metal": precious}, rec["candidates"], v["product_description"])
-    marks = ", ".join(m["type"] for m in v["marks"]) or "none"
-    q = (f"{question.strip() or 'Which Indian Standard applies, is BIS certification compulsory, and which scheme?'} "
-         f"(Product in my photo: {v['product_description']}. Marks visible: {marks}"
-         + (f"; IS number on label: {v['is_number_on_label']}" if v.get("is_number_on_label") else "") + ".)")
-    res = memory.chat(q, sid, use_cache=use_cache, owner=owner)
-    memory.set_profile(res["session_id"], {"product": v.get("product_type"),
-                                           "is_number": v.get("is_number_on_label")})
+    res, rec, sch = _answer(v, question, sid, precious, t0)
+    memory.add_turn(sid, "user", f"[photo: {v.get('product_type')}] {question}".strip())
+    memory.add_turn(sid, "assistant", res["answer"], [c["chunk_id"] for c in res.get("citations", [])])
+    memory.set_profile(sid, {"product": v.get("product_type"), "is_number": v.get("is_number_on_label")})
+    res["session_id"] = sid
     if not res.get("refused"):
         body, sep, sources = res["answer"].partition("\n\n**Sources:**")
         parts = [seen_block(v, checks), mark_line(v, rec, sch, res.get("citations", [])), body.strip(), verify_line(v)]
