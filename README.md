@@ -6,6 +6,7 @@
 
 An AI assistant for **Indian Standards, BIS certification (ISI · CRS · FMCS), Quality Control Orders and hallmarking**.
 Every fact it gives is cited to the official BIS document and page it came from.
+<img width="1792" height="932" alt="Screenshot 2026-10-01 at 3 31 02 PM" src="https://github.com/user-attachments/assets/e1780a0d-8865-47e5-97d3-46a1d5ebcad8" />
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)
