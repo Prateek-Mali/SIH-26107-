@@ -1,0 +1,51 @@
+# Scheme selector rules. Every "why" and every step cites the chunk(s) that prove it (chunk_id in chunks.jsonl).
+# Wording follows those chunks; do not add a step without a proof chunk.
+schemes:
+  hallmarking:
+    name: Hallmarking (jeweller registration + HUID)
+    why: Gold and silver articles are hallmarked under the BIS Act and the BIS (Hallmarking) Regulations, 2018, which cover the registration of jewellers; each hallmarked article carries a HUID.
+    proof: [hm_faq_general__bis_act_and_regulation_faq::0000, hm_faq_general::0002]
+    compulsory_proof: hm_mandatory_order_page::0000
+    portal: {name: BIS hallmarking page, url: "https://www.bis.gov.in/hallmarking-overview/?lang=en"}
+    steps:
+      - {text: "A jeweller who sells hallmarked jewellery or artefacts applies online for a Certificate of Registration on the NSWS portal; the registration is granted instantly.", proof: hm_jewellers_guidelines::0001}
+      - {text: "Each hallmarked article carries a six-digit alphanumeric HUID, which a buyer can verify with 'Verify HUID' in the BIS CARE app.", proof: hm_faq_general::0002}
+  crs:
+    name: Scheme II (Compulsory Registration Scheme, CRS)
+    why: The product is on the list of electronics and IT goods under the Compulsory Registration Scheme, where conformity is by self-declaration.
+    proof: [scheme2_page::0000]
+    portal: {name: CRS portal, url: "https://www.crsbis.in/BIS/registration-page.do"}
+    steps:
+      - {text: "Register the product under Scheme II (Compulsory Registration Scheme) for self-declaration of conformity.", proof: scheme2_page::0000}
+      - {text: "Meet the labelling and marking requirements of para 6 of Scheme II of the BIS (Conformity Assessment) Regulations, 2018.", proof: marking_requirements::0000}
+      - {text: "A foreign manufacturer nominates an Indian representative (Form-IV of Scheme II) when applying.", proof: ca_regulations_2018::0122}
+  scheme1:
+    name: Scheme I (ISI mark licence)
+    why: The product is on the BIS list of products under compulsory certification (Scheme I, ISI mark), and the licence is granted after BIS assesses the factory and the product is tested.
+    proof: [guide_grant_of_licence::0001]
+    portal: {name: Manak Online, url: "https://www.manakonline.in/"}
+    steps:
+      - {text: "Apply online in Form-V with the documents listed in Form-V and the self-evaluation cum verification report.", proof: guide_grant_of_licence::0001}
+      - {text: "Attach the BIS check-list for applications; it is required with every application for a BIS licence.", proof: application_checklist::0000}
+      - {text: "Pay the application fee of Rs. 1000; the inspection fee of Rs. 7,000 per man day is paid before the preliminary inspection visit.", proof: cert_faq::0001}
+      - {text: "BIS visits the factory to assess infrastructure, production, quality control and testing, and the product is tested in a third-party laboratory, during the visit, or both.", proof: guide_grant_of_licence::0001}
+      - {text: "After the decision to grant, pay the annual licence fee of Rs. 1000 plus the minimum marking fee for the product.", proof: cert_faq::0001}
+  fmcs:
+    name: FMCS (Scheme I for foreign manufacturers)
+    why: The product needs a Scheme I licence and the maker is outside India, so the foreign manufacturer applies under the Foreign Manufacturers Certification Scheme.
+    proof: [fmcs_how_to_apply::0000, fmcs_faq::0001]
+    portal: {name: FMCS page, url: "https://www.bis.gov.in/fmcs/fmcs-overview/?lang=en"}
+    steps:
+      - {text: "The foreign manufacturer fills in the application form (Form-V) with the necessary documentation.", proof: fmcs_how_to_apply::0000}
+      - {text: "Nominate an Authorized Indian Representative (AIR) using the prescribed nomination form; nominating an AIR is mandatory.", proof: fmcs_faq::0001}
+      - {text: "Check the application is complete against the checklist of documents, then submit it with the fees at FMCD, BIS Headquarters, New Delhi.", proof: fmcs_how_to_apply::0000}
+  voluntary:
+    name: "Not compulsory per my documents (voluntary certification possible under Scheme I)"
+    why: No product row in the BIS compulsory-certification lists I have matches this product; BIS certification is basically voluntary, and it is compulsory only for products the Central Government notifies.
+    proof: [cert_overview::0000]
+    portal: {name: Manak Online, url: "https://www.manakonline.in/"}
+    steps:
+      - {text: "BIS certification is voluntary for products that are not notified as compulsory; you may still apply for a licence under Scheme I.", proof: cert_overview::0000}
+notes:
+  importer: {text: "An importer or trader cannot hold the licence for the manufacturer: under FMCS the application is made by the foreign manufacturer only.", proof: fmcs_faq::0007}
+  simplified: {text: "This IS appears on the list of products for option-2 (the erstwhile simplified procedure) for grant of licence.", proof: simplified_procedure_list::0001}
