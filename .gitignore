@@ -12,5 +12,8 @@ eval/results.jsonl
 kb_graph/
 data/processed/
 data/refusals.jsonl
+data/understand_failures.jsonl
 eval/embedding_map.html
 eval/knowledge_graph.html
+data/memory.sqlite
+data/.last_session

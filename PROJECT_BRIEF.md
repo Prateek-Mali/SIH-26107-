@@ -16,7 +16,7 @@ Why RAG, not fine-tuning: rules change often (new QCOs and amendments every mont
 | Language | Python 3.11+ |
 | LLM | Google Gemini via `google-genai` SDK. `GEMINI_MODEL` then `GEMINI_MODEL_FALLBACKS` (quota is per model; each model is tried on every key in `GEMINI_API_KEY`, `GEMINI_API_KEY_2`). Flash-Lite (`GEMINI_ROUTER_MODEL`) for cheap calls (Hindi→English query, eval judge). On import, `app/config.py` prints the available Flash models. |
 | Fallback LLM | `ANSWER_PROVIDER` (gemini) is the one answer model per run; Groq (`GROQ_API_KEY`, `GROQ_MODEL`) only as a visible `FALLBACK:`. No Ollama (owner, Task 12). No waiting on 429. |
-| Pipeline | Single knowledge base, linear pipeline in `app/answer.py` (the old LangGraph multi-agent graph is in `app/agents_old/`, not used; owner approved in Task 1/2) |
+| Pipeline | Single knowledge base, linear pipeline in `app/answer.py` (replaced the original multi-agent graph; owner approved in Task 1/2), plus a tool-using agent in `app/agent.py` |
 | Embeddings | `bge-m3` run in-process via fastembed ONNX (`EMBED_PROVIDER=local`, model in `index/models`), 1024 dims, same vectors as the old Ollama bge-m3. No Ollama app. |
 | Reranker | Local ONNX cross-encoder via `fastembed` (`RERANK_MODEL`, default `Xenova/ms-marco-MiniLM-L-12-v2`; Intel Mac, no PyTorch) |
 | Vector DB | Qdrant in **local embedded mode** (`QdrantClient(path="index/qdrant")`), no server needed |
@@ -25,7 +25,7 @@ Why RAG, not fine-tuning: rules change often (new QCOs and amendments every mont
 | PDF parsing | PyMuPDF (`pymupdf`). If a page has no text layer (scanned or Hindi Gazette), send that page to Gemini for text extraction. |
 | HTML parsing | `httpx` + `beautifulsoup4` (+ `pandas.read_html` for tables) |
 | API | FastAPI with streaming (SSE) |
-| Test UI (Phase 1) | Streamlit chat. The web teammate builds the real Next.js UI against the same API later. |
+| Web UI | `ui/web/` (home, login, chat), served by the API at `/app`; login users in MongoDB (`app/auth.py`). |
 | Evaluation | RAGAS + a hand-checked question set |
 
 ---
@@ -52,7 +52,7 @@ bis-assistant/
 │   └── refresh.sh             # download → parse → chunk → build_index
 ├── app/
 │   ├── config.py              # loads .env
-│   ├── llm.py                 # Gemini client + Ollama fallback + retry
+│   ├── llm.py                 # Gemini + Groq, one pinned answer model, visible fallback
 │   ├── retrieval.py           # hybrid search (vector + BM25 + RRF), filter by agent
 │   ├── prompts.py             # all system prompts (rules below)
 │   ├── agents/
@@ -67,7 +67,7 @@ bis-assistant/
 │   ├── graph.py               # builds the LangGraph
 │   ├── tools.py               # product lookup in CSVs, official-link lookup
 │   └── api.py                 # FastAPI: POST /chat (SSE), GET /health, GET /sources
-├── ui/streamlit_app.py
+├── ui/web/                    # web chat (home, login, chat)
 ├── eval/
 │   ├── questions.jsonl        # question, expected_answer, expected_source_ids, type
 │   └── run_eval.py            # RAGAS + citation checks → eval/report.md
