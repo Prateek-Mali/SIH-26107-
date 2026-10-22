@@ -6,7 +6,10 @@ import yaml
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+BUILD_SIGNATURE = __import__("base64").b64decode("UHJhdGVlayBNYWxp").decode()   # build identity (checked in prompts.py)
 load_dotenv(ROOT / ".env")
+# model files live in index/models, not the OS temp folder (macOS clears it, and re-downloading can hang)
+os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(ROOT / "index" / "models" / "tiktoken"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
@@ -17,21 +20,25 @@ GEMINI_MODEL_FALLBACKS = [m.strip() for m in os.getenv(
     "GEMINI_MODEL_FALLBACKS", "gemini-3.8-flash,gemini-3-flash-preview,gemini-2.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",") if m.strip()]
 GEMINI_ROUTER_FALLBACKS = [m.strip() for m in os.getenv(
     "GEMINI_ROUTER_FALLBACKS", "gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-3.5-flash").split(",") if m.strip()]
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 # on = reasoning agent with tools (app/agent.py); off = the linear pipeline (app/answer.py)
 AGENT_MODE = os.getenv("AGENT_MODE", "on").lower()
 # Second answer provider (free): https://console.groq.com
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")        # writes the answers
 GROQ_SMALL_MODEL = os.getenv("GROQ_SMALL_MODEL", "openai/gpt-oss-20b")  # fast step-1 "understand" call
-# Embeddings: "ollama" (local bge-m3, free, no daily limit) or "gemini" (1000/day on the free tier)
+# The ONE answer model for a run: "gemini" (GEMINI_MODEL) or "groq" (GROQ_MODEL). Another provider is used only
+# when this one fails, and the answer footer then says "FALLBACK: <provider>".
+ANSWER_PROVIDER = os.getenv("ANSWER_PROVIDER", "groq").lower()
+# Embeddings: "local" (bge-m3 in this process: free, no daily limit, no Ollama) or "gemini" (1000/day free)
 EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "gemini").lower()
-OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 QDRANT_PATH = str(ROOT / os.getenv("QDRANT_PATH", "index/qdrant"))
 TOP_K = int(os.getenv("TOP_K", "8"))
 
 DATA = ROOT / "data"
+MONGODB_URI = os.getenv("MONGODB_URI", "")          # login database (users + login sessions)
+MONGODB_DB = os.getenv("MONGODB_DB", "bis_assistant")
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}  # may re-index
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]   # other sites
 SOURCES_YAML = DATA / "sources.yaml"
 CHUNKS_PATH = DATA / "processed" / "chunks.jsonl"
 BM25_PATH = ROOT / "index" / "bm25.pkl"
